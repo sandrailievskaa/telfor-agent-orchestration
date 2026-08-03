@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PolicyCheckResult",
+  "type": "object",
+  "required": ["policy_pass", "violations", "risk_level"],
+  "properties": {
+    "policy_pass": { "type": "boolean" },
+    "violations": { "type": "array", "items": { "type": "string" } },
+    "risk_level": { "type": "string", "enum": ["low", "medium", "high"] }
+  }
+}
