@@ -15,9 +15,9 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
-import ollama
 
 from guardrails.common import safe_json_parse
+from guardrails.llm_client import call_llm
 from guardrails.check_policy import check as check_policy
 
 import graph_v1 as v1
@@ -35,8 +35,7 @@ def policy_checker_node_v2(state: v1.GraphState) -> v1.GraphState:
 - risk_level "high" ако портот е еден од: 22, 23, 3389 (административни/чувствителни порти)
 - Ако правилото НЕ го исполнува ниту еден од двата дефинирани high-risk услови, задолжително policy_pass: true и risk_level: "low".
 - инаку risk_level "low" или "medium" според проценка"""
-    response = ollama.chat(model="qwen2.5:7b", messages=[{"role": "user", "content": prompt}], format="json")
-    state["policy_result"] = safe_json_parse(response["message"]["content"])
+    state["policy_result"] = safe_json_parse(call_llm(prompt))
     return state
 
 

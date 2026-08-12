@@ -14,11 +14,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "langgraph-poc"))
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import graph_v1
+from guardrails.llm_client import MODEL_NAME
 
 PLATFORM = "langgraph"
 N_RUNS = 10
 OUTPUT_PATH = Path(__file__).resolve().parent.parent / "results" / "experiment_results.csv"
-CSV_FIELDS = ["platform", "intent_id", "run", "outcome", "failed_at_step", "guardrail_catches", "duration_sec"]
+CSV_FIELDS = ["platform", "intent_id", "run", "outcome", "failed_at_step", "guardrail_catches", "duration_sec", "model"]
 
 TEST_INTENTS = [
     {
@@ -71,6 +72,7 @@ def run_once(intent_id: str, raw_request: str, run_number: int) -> dict:
             "failed_at_step": _failed_at_step(outcome, guardrail_log),
             "guardrail_catches": sum(1 for e in guardrail_log if not e.get("passed", True)),
             "duration_sec": round(duration, 2),
+            "model": MODEL_NAME,
         }
     except Exception as e:
         duration = time.perf_counter() - start
@@ -82,6 +84,7 @@ def run_once(intent_id: str, raw_request: str, run_number: int) -> dict:
             "failed_at_step": f"exception: {type(e).__name__}: {e}",
             "guardrail_catches": 0,
             "duration_sec": round(duration, 2),
+            "model": MODEL_NAME,
         }
 
 

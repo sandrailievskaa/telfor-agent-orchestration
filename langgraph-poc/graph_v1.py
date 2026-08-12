@@ -1,9 +1,10 @@
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from typing import TypedDict
-import ollama, sys, requests, uuid
+import sys, requests, uuid
 sys.path.append(".")
 from guardrails.common import safe_json_parse
+from guardrails.llm_client import call_llm, MODEL_NAME
 from guardrails.check_intent_parser import check as check_intent
 from guardrails.check_policy import check as check_policy
 from guardrails.check_validator import check as check_validator
@@ -41,8 +42,7 @@ confidence треба да е број од 0 до 1 кој покажува к�
 {{"source_subnet":"...","dest_subnet":"...","dest_port":0,"protocol":"tcp|udp|icmp","confidence":0.0}}
 
 Барање: {state['raw_request']}"""
-    response = ollama.chat(model="qwen2.5:7b", messages=[{"role": "user", "content": prompt}], format="json")
-    state["parsed_intent"] = safe_json_parse(response["message"]["content"])
+    state["parsed_intent"] = safe_json_parse(call_llm(prompt))
     return state
 
 
@@ -61,8 +61,7 @@ def validator_node(state: GraphState) -> GraphState:
 Правило: {intent['source_subnet']} -> {intent['dest_subnet']}:{intent['dest_port']}/{intent['protocol']}
 
 Провери: дали протоколот е соодветен за портот, дали subnet опсезите се смислени (не се исти, не се празни)."""
-    response = ollama.chat(model="qwen2.5:7b", messages=[{"role": "user", "content": prompt}], format="json")
-    state["validation_result"] = safe_json_parse(response["message"]["content"])
+    state["validation_result"] = safe_json_parse(call_llm(prompt))
     return state
 
 
@@ -114,8 +113,7 @@ def policy_checker_node(state: GraphState) -> GraphState:
 - risk_level "high" ако source_subnet е поширок од /16 (премногу широк опсег)
 - risk_level "high" ако портот е еден од: 22, 23, 3389 (административни/чувствителни порти)
 - инаку risk_level "low" или "medium" според проценка"""
-    response = ollama.chat(model="qwen2.5:7b", messages=[{"role": "user", "content": prompt}], format="json")
-    state["policy_result"] = safe_json_parse(response["message"]["content"])
+    state["policy_result"] = safe_json_parse(call_llm(prompt))
     return state
 
 
@@ -147,8 +145,7 @@ def planner_node(state: GraphState) -> GraphState:
 {{"proposed_rule_summary": "...", "change_plan": "...", "rollback_plan": "..."}}
 
 Правило: {intent['source_subnet']} -> {intent['dest_subnet']}:{intent['dest_port']}/{intent['protocol']}"""
-    response = ollama.chat(model="qwen2.5:7b", messages=[{"role": "user", "content": prompt}], format="json")
-    state["plan_result"] = safe_json_parse(response["message"]["content"])
+    state["plan_result"] = safe_json_parse(call_llm(prompt))
     return state
 
 

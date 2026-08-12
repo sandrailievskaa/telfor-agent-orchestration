@@ -16,6 +16,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 import experiment_policy_v2 as v2
 
 from run_experiment import TEST_INTENTS, N_RUNS, OUTPUT_PATH, CSV_FIELDS, _failed_at_step
+from guardrails.llm_client import MODEL_NAME
 import csv
 
 PLATFORM = "langgraph_prompt_v2"
@@ -36,6 +37,7 @@ def run_once_v2(intent_id: str, raw_request: str, run_number: int) -> dict:
             "failed_at_step": _failed_at_step(outcome, guardrail_log),
             "guardrail_catches": sum(1 for e in guardrail_log if not e.get("passed", True)),
             "duration_sec": round(duration, 2),
+            "model": MODEL_NAME,
         }
     except Exception as e:
         duration = time.perf_counter() - start
@@ -47,6 +49,7 @@ def run_once_v2(intent_id: str, raw_request: str, run_number: int) -> dict:
             "failed_at_step": f"exception: {type(e).__name__}: {e}",
             "guardrail_catches": 0,
             "duration_sec": round(duration, 2),
+            "model": MODEL_NAME,
         }
 
 

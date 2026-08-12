@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mock_firewall",
+      "runtimeExecutable": "venv/Scripts/uvicorn.exe",
+      "runtimeArgs": ["mock-services.mock_firewall:app", "--port", "9000"],
+      "port": 9000
+    },
+    {
+      "name": "guardrail_api",
+      "runtimeExecutable": "venv/Scripts/uvicorn.exe",
+      "runtimeArgs": ["mock-services.guardrail_api:app", "--port", "9100"],
+      "port": 9100
+    },
+    {
+      "name": "n8n",
+      "runtimeExecutable": "n8n",
+      "runtimeArgs": ["start"],
+      "port": 5678
+    }
+  ]
+}

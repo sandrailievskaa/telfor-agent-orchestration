@@ -356,3 +356,306 @@ over-caution) веднаш го открива следниот (planner schema 
 на овој контролиран експеримент - `experiment_policy_v2.py` и
 `run_experiment_v2.py` се привремени и може да се избришат откако наодот
 е документиран (веќе е, овде).
+
+## 14. Model-agnostic рефактор - подготовка за multi-model споредба (пред n8n)
+
+**Зошто:** менторката најави дека наскоро добиваме пристап до поголеми LLM-ови
+(Llama3.3, Qwen, DeepSeek, GLM, gpt-oss) преку надворешен API, како
+замена/дополнение на локалниот `qwen2.5:7b`. Архитектурата требаше да
+дозволува замена на модел/провајдер без рачно менување на секој prompt повик.
+
+**Што е направено:**
+- Нов `guardrails/llm_client.py` - единствено место со `MODEL_NAME` (читано
+  од `LLM_MODEL` env var, fallback `qwen2.5:7b`) и `LLM_PROVIDER` (`ollama`
+  default, `external` подготвено но фрла `NotImplementedError` со јасна
+  порака додека не добиеме endpoint/token од менторката). `call_llm(prompt)
+  -> str` е единствената точка на влез - internally одлучува Ollama vs
+  надворешен API, го форсира JSON output mode, го враќа суровиот текст
+  (повикувачот сепак прави `safe_json_parse()`).
+- Сите 4 повици во `langgraph-poc/graph_v1.py` (intent_parser, validator,
+  policy_checker, planner) сега користат `call_llm()` наместо директен
+  `ollama.chat(model="qwen2.5:7b", ...)`.
+- `langgraph-poc/experiment_policy_v2.py` (контролираниот експеримент,
+  Наод #13) исто ажуриран за конзистентност - инаку ќе останеше единствениот
+  node hardcoded на "qwen2.5:7b" додека сите останати nodes веќе го читаат
+  MODEL_NAME, што ќе создадеше тивка неусогласеност при идно тестирање со
+  друг модел.
+- `test-harness/run_experiment.py` и `run_experiment_v2.py` - додадена
+  `"model"` колона во CSV_FIELDS, пополнета од `MODEL_NAME` во моментот на
+  извршување. Постојниот `results/experiment_results.csv` (50 редови од
+  експериментите #10, #12, #13) е мигриран - додадена `model=qwen2.5:7b`
+  колона на сите постоечки редови (точна историска вредност, потврдена преку
+  сите претходни smoke тестови и Ollama логови во оваа сесија), не изгубени
+  податоци.
+
+**Верификација:** brz smoke test по рефакторот (`guaranteed_safe` intent)
+даде идентичен образец на однесување како пред рефакторот - guardrail
+коректно фати уште еден halucinirani "high risk" claim
+(`risk_level_overstated_hallucinated` за /32 subnet + порт 9090), потврдувајќи
+дека рефакторот не влијае на pipeline логиката, само на конфигурацијата.
+Дополнително проверено: `LLM_PROVIDER=external` чисто фрла `NotImplementedError`
+со објаснување, `LLM_PROVIDER=<непознато>` фрла `ValueError` - двете
+fail-fast, не тивко fallback на погрешно однесување.
+
+**Импликација:** идно тестирање со надворешни модели (кога го добиеме API
+пристапот) ќе бара само `_call_external()` да се имплементира еднаш во
+`guardrails/llm_client.py` плус `LLM_MODEL=<модел>` и `LLM_PROVIDER=external`
+env variables - нула промени во node промптите или графот. `platform` колоната
+во CSV останува orthogonal димензија (langgraph/n8n/langflow) - `model`
+дозволува независна споредба на модели В рамки на иста platform.
+
+## 15. n8n Ollama Chat Model credential не се поврзува преку "localhost" - IPv6-first DNS resolution во Node.js
+
+**Проблем:** При поставување на "Ollama Chat Model" sub-node во n8n (за AI
+Agent vs Chain експериментот), credential тестот со Base URL
+`http://localhost:11434` враќал "Couldn't connect with these settings" /
+"The service refused the connection - perhaps it is offline", и покрај тоа
+што Ollama е потврдено достапен на истата адреса преку `curl` од Python/Bash
+страна во истиот момент (200 OK, `qwen2.5:7b` во листата).
+
+**Причина:** Node.js (в. 17+, а тука конкретно v24.16.0) по default ја
+преферира IPv6 резолуција за "localhost" (враќа `::1` пред `127.0.0.1`).
+Ollama на Windows слуша стандардно само на `127.0.0.1` (IPv4), не и на `::1`
+- па Node-based n8n процесот се обидува да се поврзе на IPv6 loopback каде
+никој не слуша, добива "connection refused", додека алатки надвор од Node
+(curl, requests од Python) не го погодуваат истиот проблем бидејќи по default
+резолвираат "localhost" поинаку или прво пробуваат IPv4.
+
+**Поправка:** Base URL во credential-от експлицитно сменет на
+`http://127.0.0.1:11434` (IPv4 адреса наместо hostname) - connection тестот
+веднаш поминал по оваа промена.
+
+**Дополнителна компликација (истиот root cause):** дури и по успешно
+зачувување на credential-от, "Model" dropdown полето продолжило да прикажува
+"Error fetching options from Ollama Chat Model" (со заведувачки hardcoded
+placeholder "llama3.2" во manual-entry режим - модел кој воопшто не е
+инсталиран локално). Ова се решило со експлицитен "Refresh List" преку "⋮"
+менито до полето (не автоматско по credential save) - потоа dropdown-от
+коректно го прикажал вистинскиот инсталиран модел "qwen2.5:7b".
+
+**Импликација:** секој иден n8n node што се поврзува на локален сервис преку
+"localhost" (не само Ollama) на оваа Windows машина треба експлицитно да
+користи `127.0.0.1` наместо "localhost" во конфигурацијата - ова е платформо-
+специфичен gotcha (Node.js DNS resolution поведение), не n8n-специфичен бug,
+и веројатно ќе влијае и на HTTP Request nodes кон `guardrail_api.py` (port
+9100) и mock firewall (port 9000) подоцна во pipeline изградбата - треба
+однапред да се користи `127.0.0.1` во сите n8n node конфигурации кон локални
+сервиси, не "localhost".
+
+## 16. AI Agent node на intent_parser чекор: 5/5 (100%) валиден JSON output
+
+**Setup:** изолиран n8n workflow ("TEST - AI Agent vs Chain (intent_parser)",
+workflow ID `CwrkhftDrYNgl08c`) со Manual Trigger → AI Agent node → Ollama
+Chat Model sub-node (`qwen2.5:7b`, преку `127.0.0.1:11434`). Prompt текстот
+(User Message, "Define below" режим) е потврден ЗБОР-ЗА-ЗБОР идентичен со
+`langgraph-poc/graph_v1.py::intent_parser_node` промптот, вклучувајќи го
+истиот тест request ("Дозволи пристап од 10.0.5.0/24 до 10.0.10.15 на порт
+443 преку TCP.") - прочитано директно од textarea DOM вредноста, не
+претпоставено.
+
+**Резултат:** 5 независни рачни извршувања (Execute workflow), сите
+"Succeeded", секое инспектирано поединечно преку Executions таб + Logs
+панел (execution IDs 1-5). Сите 5 вратиле ИДЕНТИЧЕН, валиден JSON:
+`{"source_subnet":"10.0.5.0/24","dest_subnet":"10.0.10.15","dest_port":443,"protocol":"tcp","confidence":1.0}`
+- 5/5 = 100% валиден JSON rate, 0 отстапувања (за разлика од LangGraph каде
+policy_checker чекорот покажа значителна нестабилност - intent_parser
+изгледа е "полесен" чекор и за двете платформи).
+
+**Времетраења:** 43.587s, 15.678s, 10.957s, 13.298s, 12.15s (опаѓачки тренд
+по првото извршување - веројатно cold-start/model-load ефект на првиот
+повик, конзистентно со Ollama однесување забележано и во LangGraph
+тестирањето).
+
+**Методолошка забелешка:** ова е само 1 тест intent (simple/valid) со n=5
+повторувања - не е директна замена за целосниот 3-4-intent × 10-run дизајн
+од LangGraph експериментите (Наод #10/#12), туку насочен изолиран тест за
+AI Agent vs Chain output-validity споредбата специфично побарана од
+менторката. Проширување на овој setup со edge-case/policy-violating intents
+е идна работа ако AI Agent пристапот се покаже релевантен за понатамошна
+употреба.
+
+## 17. Basic LLM Chain на intent_parser чекор: 5/5 (100%) валиден JSON - ИДЕНТИЧНО со AI Agent, нема разлика во оваа проба
+
+**Setup:** истиот workflow (`CwrkhftDrYNgl08c`), нов "Basic LLM Chain" node
+додаден паралелно со AI Agent (двата поврзани директно на истиот Manual
+Trigger, не синџирно еден по друг - Basic LLM Chain не консумира upstream
+JSON бидејќи Prompt изворот е "Define below" со статичен текст, па паралелна
+врска е поточна репрезентација на "две независни патеки до истата задача"
+отколку синџирно поврзување). Конфигурација:
+- Source for Prompt (User Message): "Define below" (наспроти default
+  "Connected Chat Trigger Node")
+- Prompt текст: потврдено ЗБОР-ЗА-ЗБОР идентичен со AI Agent верзијата и
+  `graph_v1.py::intent_parser_node` (553 карактери, читано директно од
+  textarea DOM вредноста преку JS, не претпоставено)
+- Model sub-node: нов "Ollama Chat Model1" (одделен инстанца, ист credential
+  "Ollama account"), Model рачно сменето од default `llama3.2` на
+  `qwen2.5:7b` (клучно - default моделот НЕ се совпаѓа со MODEL_NAME/
+  graph_v1.py конфигурацијата, лесно е да се пропушти оваа промена и да се
+  тестира со погрешен модел)
+
+**Резултат:** 5 извршувања на целиот workflow (AI Agent + Basic LLM Chain
+паралелно во секое "Execute workflow" копче, инспектирани поединечно преку
+Logs панел за Basic LLM Chain → Ollama Chat Model1 sub-node). Сите 5 вратиле
+ИДЕНТИЧЕН, валиден JSON:
+`{"source_subnet":"10.0.5.0/24","dest_subnet":"10.0.10.15","dest_port":443,"protocol":"tcp","confidence":1.0}`
+- 5/5 = 100% валиден JSON rate, ИСТО како AI Agent (5/5 = 100%, Наод #16).
+
+**Времетраења (Basic LLM Chain sub-node повик, не целиот workflow):**
+26.761s, 10.418s, ~9.1s, ~8.1s, 8.944s - истиот опаѓачки тренд по првото
+извршување (cold-start ефект) како кај AI Agent, но со забележливо
+ПОКРАТКИ времиња по стабилизирање (~8-10s наспроти AI Agent-овите ~11-16s
+по cold-start) - можно објаснување: AI Agent додава orchestration overhead
+(agent loop логика, tool-calling инфраструктура) дури и кога не се
+користат Memory/Tool слотовите, додека Basic LLM Chain е потенок wrapper
+директно околу LLM повикот.
+
+**Наод:** за овој конкретен, добро-дефиниран structured-output чекор
+(intent_parser, едноставен/валиден test intent), НЕМА разлика во JSON
+validity помеѓу AI Agent и Basic LLM Chain nodes - двата постигнаа 5/5
+(100%). Ова НЕ ја потврдува тврдењето од n8n документацијата/заедницата
+дека "AI Agent nodes се понепоуздани за детерминистички structured-output
+чекори" - барем не за овој едноставен случај со qwen2.5:7b. Можни причини
+зошто не е забележана разлика: (а) intent_parser е "полесен" чекор
+(потврдено и во LangGraph - високо стабилен, за разлика од policy_checker),
+(б) n=5 е премал примерок за да се детектира ретка нестабилност, (в)
+можеби разликата се манифестира само на посложени чекори со повеќе
+context/tool-calling комплексност (кај policy_checker или planner), не кај
+чиста JSON екстракција. Идна работа: повтори ја истата споредба на
+policy_checker чекорот (каде LangGraph веќе покажа значителна LLM
+нестабилност/halucinacija - Наод #3/#4/#9), каде разлика би била
+поверојатна и повредна за детектирање.
+
+**Заклучок за трудот:** методолошки валиден резултат е "не е детектирана
+разлика во овој ограничен тест" - не треба да се преформулира како "AI
+Agent и Chain се подеднакво добри" без дополнително тестирање на
+понестабилни чекори. Времетраењето (не validity) покажа мерлива разлика во
+корист на Basic LLM Chain (~30-40% побрзо по cold-start) - ова е самостоен,
+поинтересен наод за performance споредбата отколку за точност.
+
+## 18. n8n validator чекор: моделот врати markdown-wrapped JSON + вишок проза - LangGraph немаше овој проблем
+
+**Setup:** проширен истиот workflow со validator чекор по образецот на
+`graph_v1.py::validator_node` - нов "Basic LLM Chain1" node поврзан на IF
+(true) излезот од intent_parser guardrail проверката, промпт со expressions
+кои читаат назад до првиот "Basic LLM Chain" node (`{{
+JSON.parse($('Basic LLM Chain').item.json.text).source_subnet }}` итн.,
+потврдено дека точно се резолвираат до "Правило: 10.0.5.0/24 ->
+10.0.10.15:443/tcp" преку live preview пред извршување). Ollama Chat
+Model2 sub-node, Model рачно сменето од default `llama3.2` на `qwen2.5:7b`
+(истиот gotcha како во Наод #17, повторен по трет пат - потврдува дека ова
+е доследно, не еднократно однесување на n8n).
+
+**Резултат:** извршувањето успеа (сите nodes зелено), НО излезот од
+Ollama Chat Model2 (`.text` полето на Basic LLM Chain1) не е чист JSON:
+
+```
+```json\n{"is_valid": true, "errors": []}\n```\n\n### Објаснување:\n- *...
+(проследено со целосно markdown-форматирано образложение на македонски -
+наслови, bold текст, bullet points)
+```
+
+Самата JSON содржина е точна (`is_valid: true, errors: []`, коректно за
+валидно правило), но е обвиткана во ```` ```json ... ``` ```` fence И
+проследена со дополнителна проза по затворената fence - за разлика од
+intent_parser чекорот (Наод #16/#17) кој и во AI Agent и во Basic LLM
+Chain верзија секогаш враќаше чист, непроширен JSON низ сите 15+
+извршувања досега.
+
+**Причина (хипотеза, потребна е потврда):** `graph_v1.py::call_llm()`
+експлицитно испраќа `format="json"` до Ollama API (принудува constrained
+JSON generation мод, забранувајќи \i markdown fences и прозен текст). n8n
+"Ollama Chat Model" LangChain node-от има checkbox "Require Specific
+Output Format" во Basic LLM Chain параметрите (default: ИСКЛУЧЕНО) - ова
+веројатно е n8n-еквивалентот на `format="json"`, но не е активиран во
+досегашната конфигурација. Ако ова е точно, разликата НЕ е случајна LLM
+нестабилност туку конфигурациска разлика помеѓу платформите - LangGraph
+секогаш принудува JSON мод, n8n Basic LLM Chain default не го прави тоа.
+
+**Импликација - методолошки критично:** ова значи дека `guardrails/common.py::safe_json_parse()`
+(со `strip_markdown_fences`) НЕ е доволен за овој случај - regex-от бара
+стрингот да ЗАВРШУВА со ```` ``` ````, но овде има проза ПОСЛЕ затворената
+fence, па дури и Python-ската верзија би паднала на овој конкретен
+пример. n8n HTTP Request-от кон `guardrail_api.py` со наивен `{{
+JSON.parse($json.text) }}` expression ќе фрли грешка на овој output (не е
+валиден JSON стринг во целост). Пред да се додаде HTTP Request за validator
+guardrail проверка, ПРВО треба да се реши ова.
+
+**Одлука и решение:** испробани се двете опции.
+"Require Specific Output Format" (опција а) е одбиена - n8n бара поврзан
+"Output Parser" sub-node со сопствен JSON schema, што ќе значеше
+дуплирање на schema дефиниции кои веќе постојат во `contracts/*.schema.json`
+(спротивно на "не преизмислувај ја guardrail логиката во n8n" принципот).
+Наместо тоа, применето е решение (б) на ДВЕ места за конзистентност:
+
+1. `guardrails/common.py::strip_markdown_fences()` - regex променет од
+   anchored (`^```...```$`, бараше fence-от да е ЦЕЛИОТ стринг) на
+   non-anchored (`re.search` наместо `re.match`, наоѓа fence БИЛО КАДЕ во
+   текстот). Потврдено со 3 тест случаи: чист JSON, fenced JSON без вишок,
+   и fenced JSON + proza по затворената fence (новиот случај) - сите
+   поминуваат, `test-harness/test_guardrails.py` сепак поминува непроменето.
+2. n8n HTTP Request "JSON" полето за validator guardrail проверка користи
+   аналогна non-anchored JS екстракција наместо гол `JSON.parse($json.text)`:
+   `{{ (() => { const t = $json.text; const m = t.match(/\`\`\`(?:json)?\s*([\s\S]*?)\`\`\`/); return JSON.parse(m ? m[1] : t); })() }}`
+
+**Импликација:** овој наод директно ја подобри Python guardrail логиката
+(не само n8n side) - да не беше откриено преку n8n тестирањето, истиот gap
+ќе останеше неоткриен во LangGraph, бидејќи intent_parser/policy_checker
+тестовите досега случајно не наишле на "проза по fence" примерок од
+qwen2.5:7b. Вреден пример за методолошка корист од тестирање на иста
+логика низ повеќе платформи - различните orchestration слоеви ги
+провоцираат различните LLM однесувања/edge cases.
+
+## 19. n=5 стабилност тест на n8n validator чекор (по поправката од Наод #18) - 5/5 успешни, поправката издржа на неколку различни варијации на "вишок" содржина
+
+**Setup:** истиот workflow (`CwrkhftDrYNgl08c`), ист фиксен тест input како
+во Наод #16-18 (правилото "10.0.5.0/24 -> 10.0.10.15:443/tcp"). 5 рачни
+"Execute workflow" извршувања на целиот workflow (intent_parser + validator
+чекори), инспектирани индивидуално преку Logs панелот за `Basic LLM Chain1`
+(validator LLM повик, `Ollama Chat Model2`) и `HTTP Request1` (`POST
+http://127.0.0.1:9100/check/validator`, повикот кон `guardrail_api` кој ја
+користи поправената `strip_markdown_fences()` логика од Наод #18). Секој
+резултат потврден преку DOM read (accessibility tree на Logs панелот), не
+само визуелно/screenshot, следејќи ја истата методологија како Наод #16-17.
+
+**Резултат:** 5/5 (100%) успешни `HTTP Request1` повици - `guardrail_api`
+секогаш точно го парсирал JSON-от и вратил `{"passed": true, "errors": []}`,
+и покрај тоа што сировиот LLM output (`Basic LLM Chain1`/`Ollama Chat
+Model2`) НИКОГАШ не бил чист JSON - секое од 5-те извршувања вратило JSON
+обвиткан во markdown fence плус дополнителна проза, во следниве варијации:
+
+| Run | Времетраење (Basic LLM Chain1) | Tokens | Варијација на "вишок" содржина | HTTP Request1 резултат |
+|---|---|---|---|---|
+| 1 | 40.136s | ~254 | compact fence + MK проза (наслови/bold/bullets) | `passed:true`, 20ms |
+| 2 | 37.58s | ~265 | compact fence + проза која почнува на MK и **среде реченица целосно префрла на кинески јазик** | `passed:true`, 11ms |
+| 3 | 50.328s | ~319 | fence со **multi-line pretty-printed** JSON (нови редови/индентација ВНАТРЕ во самиот JSON) + MK проза | `passed:true`, 19ms |
+| 4 | 17.068s | ~174 | compact fence + кратка MK проза | `passed:true`, 16ms |
+| 5 | 32.79s | ~252 | compact fence + MK проза со нумерирана листа | `passed:true`, 24ms |
+
+Нема ниту еден connection error, timeout, ниту "retrying" статус во сите 5
+извршувања. Вкупно времетраење на целиот workflow по извршување: 53.6s до
+1m27s (варира главно според должината на генерираната проза, не поради
+инфраструктурни проблеми).
+
+**Наод:** поправката од Наод #18 (non-anchored `re.search` во
+`guardrails/common.py::strip_markdown_fences()`, плус аналогна non-anchored
+JS regex екстракција во n8n `HTTP Request1` "JSON" полето) целосно издржа
+на секоја варијација на "вишок" содржина забележана во оваа сесија - не
+само оригиналниот случај (fence + проза по затворената fence, како во #18),
+туку и два нови, потешки случаи: (а) внатрешно multi-line форматирање НА
+самиот JSON (run 3, каде non-greedy match со DOTALL/`[\s\S]*?` мора да
+опфати нови редови ВНАТРЕ во fence-от, не само надвор од него), и (б)
+целосна промена на јазик среде проза (run 2, кинески текст по MK почеток -
+regex-от воопшто не е засегнат бидејќи бара само fence маркери, независно
+од јазикот/содржината на прозата). Ова е силна потврда дека non-anchored
+пристапот е робустен фикс применлив на широк опсег на LLM output варијации,
+не привремена закрпа специфична за еден единствен набљудуван пример.
+
+**Методолошка забелешка:** сите 5 извршувања користеа ист фиксен тест input
+- овој тест ја мери СТАБИЛНОСТА на JSON-екстракцијата (robustness на
+`guardrail_api` парсирањето) низ варијации на LLM формат/проза, не ја
+точноста на validator-ската `is_valid` семантичка логика сама по себе (сите
+5 враќаа `is_valid: true`, како што се очекува за валиден/добро-формиран
+input). Проширување со invalid-input тест случаи (за да се потврди дека
+validator исто така точно ги детектира invalid рути низ истите
+формат-варијации) е идна работа, аналогно на пошироките multi-intent
+LangGraph експерименти (Наод #10/#12).
