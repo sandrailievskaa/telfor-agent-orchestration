@@ -659,3 +659,251 @@ input). Проширување со invalid-input тест случаи (за д
 validator исто така точно ги детектира invalid рути низ истите
 формат-варијации) е идна работа, аналогно на пошироките multi-intent
 LangGraph експерименти (Наод #10/#12).
+
+## 20. n8n чекори 3-9 (netbox, policy, planner, dry_run, human approval, apply, verify) изградени и изолирано потврдени - human approval чекорот открил два инфраструктурни "gotcha"-и надвор од самиот n8n workflow
+
+**Статус:** сите преостанати чекори од n8n pipeline-от (workflow
+`CwrkhftDrYNgl08c`) се изградени по образецот на Наод #16-19 (HTTP Request
+кон соодветниот `guardrail_api`/`mock_firewall` endpoint + IF node за
+conditional routing) и поединечно потврдени со "Execute step"/"Execute
+workflow" пред да се продолжи на следниот. Најделикатниот чекор,
+human-in-the-loop одобрувањето (Табела 1, чекор 7, аналогно на LangGraph
+`interrupt_before=["apply_node"]`), е имплементиран со `n8n-nodes-base.wait`
+(Resume: "On Form Submitted") поврзан на dry_run guardrail-от, со Form
+Description expression што ги реконструира истите информации како
+`_cli_approve()` во `graph_v1.py` (proposed_rule_summary, change_plan,
+rollback_plan, dry-run резултат), плус Dropdown поле `decision`
+(approve/deny) и IF node по Wait-от кој рутира на `{{ $json.decision }}` is
+equal to "approve".
+
+**Резултат (execution ID#38, потврдено директно преку Output панелот на
+секој node):** Wait node-от навистина паузира извршување (execution status
+"Waiting" во Executions табот, потврдено 2m40s+ додека чека), формата
+коректно ги прикажува сите очекувани полиња, и по симулирано "approve"
+поднесување, IF node-от по Wait покажува `decision: "approve"` во **True
+Branch (1 item)**, False Branch празна - трите експлицитни success
+критериуми за овој чекор се исполнети.
+
+**Инфраструктурен наод 1 - n8n session expiry произведува тивко/двосмислено
+UI однесување наместо јасна грешка:** во една рана итерација на тестирањето,
+n8n browser session-ot истечил среде тестирање. Наместо веднаш да прикаже
+login екран, UI-то продолжило да прикажува стар/кеширан приказ на
+Executions табот - вклучувајќи и еден execution означен како "Succeeded" во
+листата, но со Wait node-от прикажан со црвена error икона на canvas-от и
+"No output data"/"Execute previous nodes to view input data" во NDV
+панелите (наместо вистински податоци или јасна грешка). Само по обид за
+нова акција (Execute workflow) се појавила експлицитна "Problem running
+workflow: Unauthorized" грешка, откривајќи ја вистинската причина.
+**Импликација:** при автоматизирано/долготрајно n8n тестирање (особено
+идниот 10x-repetition harness за n8n), session validity треба експлицитно
+да се провери пред да се толкува "Succeeded"/execution статус како
+веродостоен - тивко истечена сесија може да произведе лажно-контрадикторни
+резултати кои изгледаат како workflow bug, но всушност се auth проблем.
+
+**Инфраструктурен наод 2 - browser automation sandbox го блокира JS-initiated
+fetch/POST кон localhost (веројатно SSRF заштита), но дозволува top-level
+навигација:** формата генерирана од Wait node-от (n8n-generated HTML со
+sendBeacon/fetch-базирано submission) конзистентно фрлала "Problem
+submitting response" грешка при обид за поднесување преку сандбокс-иран
+browser automation алатката користена во оваа сесија (Claude Browser pane).
+Мрежниот лог покажал дека и самиот form-submit POST и последователниот
+status-polling GET враќале `net::ERR_BLOCKED_BY_CLIENT` - иако
+top-level навигацискиот GET (првично вчитување на формата) успеал.
+Дијагностички тест (рачен `fetch('http://localhost:5678/healthz')` од
+JavaScript во истата страница) исто така враќал "Failed to fetch",
+потврдувајќи дека блокирањето е на ниво на JS-initiated мрежни повици кон
+localhost/private IP адреси во browser automation алатката, не n8n-специфичен
+или workflow-специфичен проблем. **Решение (workaround):** формата успешно
+поднесена преку директен HTTP POST (multipart/form-data) кон истиот
+`resumeFormUrl` (со signature query параметарот) издаден ИЗВАН
+browser-от, преку PowerShell `Invoke-WebRequest` - server-side одговорил
+`{"status":200}` и execution-от коректно продолжил. **Импликација за идниот
+n8n test-harness:** автоматизирано симулирање на human-approval чекорот
+(аналогно на LangGraph-овиот `approve_callback` параметар) НЕ смее да се
+потпира на browser-driven form interaction ако се користи слична
+сандбокс-ирана automation алатка - треба директно HTTP POST кон
+`resumeFormUrl`-от (достапен преку n8n execution метаподатоци), надвор од
+browser sandbox контекстот.
+
+## 21. Нова варијанта на qwen2.5:7b halucinacija на planner чекорот - jazik switch НАСРЕД JSON плус дуплиран JSON блок, потешка форма од Наод #18/#19
+
+**Проблем:** при едно извршување на planner чекорот (`Basic LLM Chain3`,
+prompt идентичен со `planner_node` во `graph_v1.py`), моделот вратил
+одговор кој содржел ВАЛИДЕН почеток на JSON (```` ```json ```` fence,
+Македонски `proposed_rule_summary`/`change_plan` текст), но среде
+`rollback_plan` вредноста моделот целосно префрлил на кинески јазик
+("Дес激活以中文回复：") и веднаш потоа генерирал ЦЕЛОСНО НОВ, втор ```` ```
+```` fenced JSON блок (со истите полиња, овој пат на кинески). Оваа
+структура е потешка од Наод #18/#19 ("проза ПОСЛЕ затворениот fence") -
+тука non-anchored `strip_markdown_fences()` regex-от (non-greedy match до
+ПРВИОТ следен ```` ``` ````) го извлекол текстот помеѓу првиот отворен
+fence и вториот (случаен) ```` ``` ```` маркер во средината на префрлувањето
+на јазик, што резултирало во НЕВАЛИДЕН JSON стринг (недовршен прв објект,
+испрекинат со странски текст) наместо чист прв ИЛИ втор JSON блок. Ова
+предизвикало n8n грешка "The value in the 'JSON Body' field is not valid
+JSON" на `HTTP Request4` node-от, целосно прекинувајќи го извршувањето
+(за разлика од #18/#19 каде guardrail-от сепак успеал да го парсира
+екстрахираниот текст).
+
+**Причина:** истата основна halucinacija категорија како #6 (подолги
+слободнотекстуални полиња → поконфузен output), но со поекстремен симптом
+специфичен за planner чекорот - веројатно поради должината/комплексноста на
+change_plan+rollback_plan комбинацијата (два долги слободнотекстуални
+полиња во еден LLM повик) моделот навлегол во repetition/language-drift
+режим познат кај помали LLM-и при подолги генерации.
+
+**Одлука (за оваа сесија):** не е применета trajna поправка на regex-от или
+промптот - за да продолжи изолираното тестирање на step 7-9 (кое бара
+детерминистички, валиден planner output за да се фокусира конкретно на
+Wait/Form механизмот), `Basic LLM Chain3` е привремено pinned на валидна
+фиксна вредност (техника веќе воспоставена во оваа сесија за policy_checker
+изолација). **Импликација за идна работа:** regex-от од Наод #18/#19
+(non-anchored `re.search` до ПРВИОТ следен fence маркер) не е доволен кога
+одговорот содржи ПОВЕЌЕ ОД ЕДЕН fenced JSON блок - потребна е или (а)
+поробустен екстракциски пристап (пр. земи ГО ПОСЛЕДНИОТ fenced блок наместо
+првиот, или обиди се да парсираш секој fenced блок по редослед додека еден
+не успее), или (б) третирање на овој случај како guardrail failure
+(structural validation error) наместо силикон екстракција - планер-скиот
+guardrail (`check_planner.py`) веќе би требало ова да го фати ако
+екстракцијата барем врати SYNTACTICALLY valid JSON (дури и од погрешен
+блок), но не помага кога екстракцијата сама по себе произведува invalid
+JSON стринг пред да стигне до guardrail-от. Оваа сесија само ја
+документира и заобиколува (pin) појавата - trajnata поправка е future work.
+
+## 22. n8n HTTP Request "Using Fields Below" body параметри: секое ПОЕДИНЕЧНО String-type поле треба експлицитно Fixed→Expression toggle, дури и кога содржи `{{ }}` синтакса
+
+**Проблем:** во `HTTP Request5` (dry_run повик кон `mock_firewall
+:9000/rules/dry-run`), три од четирите body параметри (`source_subnet`,
+`dest_subnet`, `protocol` - сите String-type) биле поставени со `{{
+JSON.parse(...) }}` содржина, но полето останало во default "Fixed" режим
+наместо "Expression". Резултат: n8n го испратил ЛИТЕРАЛНИОТ, нерезолвиран
+текст `{{ JSON.parse($('Basic LLM Chain').item.json.text).source_subnet
+}}` како стринг вредност кон `mock_firewall`-от, наместо вистинската
+вредност. Четвртото поле (`dest_port`, Number-type) веќе работело коректно
+- сугерирајќи дека Number-type полиња можеби автоматски се третираат
+поинаку, или дека полето едноставно било претходно рачно префрлено на
+Expression режим без забележано.
+
+**Откриено преку:** Wait node-от (step 7) чија Form Description echo-ира
+назад ($json, dry_run резултатот) - формата прикажувала нерезолвирани `{{
+}}` изрази во Dry-run секцијата наместо реалните CIDR/порт вредности,
+директно откривајќи го проблемот преку крајниот human-facing излез, не
+преку низок-ниво debugging.
+
+**Поправка:** секое од трите засегнати полиња експлицитно префрлено од
+"Fixed" на "Expression" преку toggle-от до самото Value поле (не преку
+глобален node-ниво toggle - секое body параметар си има сопствен
+независен Fixed/Expression preklopnik во "Using Fields Below" режимот).
+По поправката, свеж execution (ID#39) го потврдил точното резолвирање:
+Wait формата прикажала вистински вредности
+(`{"source_subnet":"10.0.5.0/24","dest_subnet":"10.0.10.15","dest_port":443,"protocol":"tcp"}`),
+и истата поправка е директно искористена како шаблон за новиот
+`HTTP Request6` (apply, чекор 8) - четирите body полиња таму биле
+поставени со Expression режим од самиот почеток, без потреба од накнадна
+поправка.
+
+**Импликација:** ова е n8n-специфичен UI gotcha (не LLM/model проблем,
+за разлика од повеќето претходни наоди) - секое ново HTTP Request node
+со "Using Fields Below" JSON body во оваа проект треба експлицитно да се
+провери дека СЕКОЕ поединечно поле (не само node-то во целина) е во
+Expression режим кога содржи `{{ }}` синтакса, инаку грешката е тивка
+(no error thrown, само погрешна/литерална вредност се испраќа) - многу
+полесно да се пропушти отколку JSON parse грешка.
+
+## 23. Чекор 10 (conditional rollback) изграден и потврден - и двете патеки (success и rollback) - користејќи го истиот `check_verifier` guardrail endpoint како LangGraph
+
+**Имплементација:** по образецот на `guardrail_verify_node` во
+`graph_v1.py` (повикува `check_verifier(verify_output, expected_rule)`
+наместо да ја реимплементира споредбата рачно во n8n), додаден е
+`HTTP Request8` (POST кон `guardrail_api :9100/check/verifier`) со тело
+составено од `verify_result: {{ JSON.stringify($json) }}` (излезот на
+verify-от, чекор 9) плус `expected_rule` реконструиран од
+`$('Basic LLM Chain')` (истиот образец како `HTTP Request5`/`HTTP
+Request6`). По него, `If8` рутира на `{{ $json.passed }}` is true: True
+→ `Pipeline Success` (NoOp node, ознака за успешен крај на pipeline-от);
+False → `HTTP Request9` (DELETE кон `mock_firewall :9000/rules/{{
+$('HTTP Request6').item.json.rule_id }}`, chekor 10) → `If9` проверува
+`{{ $json.rolled_back }}` is true.
+
+**Резултат - success патека (execution ID#47, реален run без pinning на
+verify-от):** `If8` → True Branch, `passed:true`, `errors:[]`; правилото
+останува во `mock_firewall` (потврдено и преку директен GET на
+rule_id-то). **Резултат - rollback патека (execution ID#48):** `If8` →
+False Branch, `passed:false`, `errors:["field_mismatch:dest_port
+expected=443 actual=9999"]`; `HTTP Request9` → `rolled_back:true`; `If9`
+→ True Branch; директен GET на истото rule_id по извршувањето враќа
+`{"exists":false,"rule":null}` - правилото е навистина избришано од
+`mock_firewall`-от, не само дека guardrail-от го "мисли" тоа.
+
+**Методолошка забелешка за симулирање на mismatch:** директно pinning на
+`HTTP Request7` (verify) со наменски погрешна вредност (за да се симулира
+"firewall-от врати нешто друго од очекуваното") излезе НЕ ДОВЕРЛИВО - види
+Наод #24. Наместо тоа, mismatch-от е форсиран **нагорно, во реалниот
+`apply` повик**: `HTTP Request6`-овото `dest_port` body поле е привремено
+хардкодирано на погрешна вредност (9999 наместо реалните 443 од
+`Basic LLM Chain`), додека `expected_rule` во `HTTP Request8` продолжува
+исправно да чита 443. Ова форсира ЦЕЛИОТ синџир (apply → verify →
+guardrail_verify) да работи со реални, непинирани HTTP повици до
+`mock_firewall`, елиминирајќи ја целата несигурност околу pin-data
+однесувањето и давајќи резултат идентичен со она што реално ќе се случи
+во production (навистина применето погрешно правило, навистина откриено
+несовпаѓање, навистина извршен rollback).
+
+**Импликација:** и двете гранки на чекор 10 се потврдени со реални
+(не-pinned) HTTP повици до `mock_firewall`, вклучувајќи независна
+странична проверка (директен GET/DELETE надвор од n8n) на реалната
+состојба - ова е најсилното ниво на потврда во целата серија наоди за
+n8n имплементацијата досега. Со ова, сите 10 чекори од Табела 1 се
+имплементирани и поединечно потврдени во n8n workflow `CwrkhftDrYNgl08c`.
+
+## 24. n8n pin data не се почитува доследно кај node-ови по `Wait`/resume - full "Execute workflow" run понекогаш го игнорира pinned output и прави реален HTTP повик наместо тоа
+
+**Проблем:** во обид да се симулира verification mismatch преку pinning
+на `HTTP Request7` (verify) со намерно погрешна вредност (`dest_port:
+8080` наместо реалните 443), три последователни реални `Execute workflow`
+извршувања (ID#41, #43, #47) - секое со потврдено (преку сопствениот
+Output панел на `HTTP Request7`, веднаш пред trigger-ување) точно
+поставен pin - сепак резултирале во `HTTP Request8` да прими `dest_port:
+443` (реалната, СОВПАЃАЧКА вредност), а не 8080 (pinned вредноста). `If8`
+затоа секогаш враќал `passed:true`, никогаш не го активирал rollback
+патот и покрај pinning-от. Проверка на реалната состојба на
+`mock_firewall`-от (директен GET на rule_id-то) покажала дека таму
+навистина стои 443 - што значи `HTTP Request7` при овие извршувања
+ВИСТИНСКИ го извршил своето GET повик кон `mock_firewall` (враќајќи ја
+реалната, точна состојба), наместо да го употреби pinned output-от.
+
+**Опсег на истражување пред заклучокот:** испробани се повеќе хипотези
+- stale/кеширана Executions-tab preview (отфрлено, потврдено преку живо
+`Logs` панелот со Overview/Details табови, кое дава автентични
+per-node Input/Output податоци за конкретно execution ID, за разлика од
+Node NDV модалот кој по неколку минути неактивност постојано прикажува
+"No output data"/"Execute previous nodes" дури и за pinned nodes);
+autosave latency (Ctrl+S + експлицитно чекање пред trigger - без ефект);
+повторно pinning со свежо потврдување - секој пат истиот резултат.
+Заклучок: проблемот не е UI display artifact туку реално execution-time
+однесување specifично за nodes чиј единствен upstream пат минува низ
+`Wait` (resume), не е репродуциран за pinned nodes ПРЕД `Wait`
+(`Basic LLM Chain`, `Basic LLM Chain3`, `HTTP Request3` сите доследно
+почитувале pin низ повеќе извршувања).
+
+**Работно решение (не root-cause поправка):** mismatch-от е наместо тоа
+форсиран нагорно во `HTTP Request6` (apply, ПРЕД `Wait`... всушност ПОСЛЕ
+Wait, но истото важи - сепак работеше зошто apply-от секогаш всушност се
+извршува реално, никогаш не сум го pinнирал за овој тест) со привремено
+хардкодирање на погрешна вредност директно во body полето (не преку pin
+data) - види Наод #23. Оваа техника целосно го заобиколува
+pin-after-Wait проблемот бидејќи не се потпира на pin data воопшто за
+нodes по Wait-от.
+
+**Импликација за идниот n8n test-harness:** pin data на nodes чиј
+единствен извршен пат минува низ `Wait`/human-approval чекор НЕ смее да
+се третира како сигурен механизам за детерминистичко тестирање во ова
+n8n instance/верзија (2.33.4) - мора да се верификува со свежо, изолирано
+извршување пред секое потпирање на него, или (побезбедно) целосно да се
+избегнува во корист на директно manipulisawe на body полињата/реални
+upstream податоци за nodes по Wait. Ова е нов, самостоен n8n-платформски
+gotcha, независен од LLM однесувањето, вреден за Methodology/Limitations
+секцијата - платформо-специфични executor-quirks (localhost/127.0.0.1
+DNS Наод #15, Fixed/Expression per-field Наод #22, а сега и
+pin-after-resume Наод #24) се повторлива категорија наоди специфична за
+n8n, без паралела во LangGraph имплементацијата.

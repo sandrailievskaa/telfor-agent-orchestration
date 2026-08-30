@@ -48,7 +48,7 @@ No `requirements.txt` exists yet; versions above are what's currently installed 
 
 ## Project status
 * **LangGraph** — complete. All 10 pipeline steps implemented and exercised end-to-end, including the human-approval gate and conditional rollback (`langgraph-poc/graph_v1.py`).
-* **n8n** — partial. Only steps 1-2 (parse intent, validate syntax) are built and verified, in workflow `CwrkhftDrYNgl08c`. Steps 3-10 (NetBox check through rollback) are not yet built.
+* **n8n** — complete. All 10 pipeline steps implemented and individually verified in workflow `CwrkhftDrYNgl08c`, including the Wait/Form human-approval gate (step 7) and conditional rollback (step 10, both the success and rollback branches confirmed against the real mock firewall state).
 * **Langflow** — not started (`langflow-poc/` exists as an empty placeholder directory).
 
 ## Reports
