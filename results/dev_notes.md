@@ -907,3 +907,1374 @@ gotcha, независен од LLM однесувањето, вреден за 
 DNS Наод #15, Fixed/Expression per-field Наод #22, а сега и
 pin-after-resume Наод #24) се повторлива категорија наоди специфична за
 n8n, без паралела во LangGraph имплементацијата.
+
+## 25. Фаза 2 (Langflow) - почеток: компонентен аналог потврден преку документација, и избегнат near-miss на dependency collision со главниот venv
+
+**Компонентен аналог (пред градба, преку docs.langflow.org):** Langflow
+има чист, дури појасен аналог на n8n-овиот "Basic LLM Chain наспроти AI
+Agent" наод:
+
+| Улога | n8n | Langflow |
+|---|---|---|
+| Детерминистички, еднократен LLM повик | Basic LLM Chain | **"Language Model" (core component)** |
+| Tool-calling/looping агент | AI Agent | **"Agent" component** |
+| HTTP повик кон надворешен API | HTTP Request | **"API Request" component** |
+| Условно рутирање | If | **"If-Else" component** |
+
+За сите наши LLM-чекори (intent_parser, validator, policy_checker,
+planner) ќе се користи "Language Model", НЕ "Agent" - истата логика како
+n8n-овиот избор. Забележана е и посебна "Structured Output" component
+(schema-enforced JSON екстракција директно во Langflow) - НАМЕРНО не се
+користи за главните guardrail проверки, за да не се реимплементира
+guardrail логика по платформа (истиот принцип како и во n8n/LangGraph -
+секогаш повик кон `guardrail_api.py`/`guardrails/*.py`, никогаш локална
+копија). Забележани и следени GitHub issues за можни платформо-специфични
+gotchas: Ollama model dropdown populate проблеми (#8205, #2885, #8172 -
+аналогно на n8n-овиот Наод #17 default-model gotcha) и Conditional
+Router/If-Else нестабилности во некои верзии (#4590, #2268) - ќе се
+тестираат изолирано пред потпирање.
+
+**Near-miss: `pip install langflow` во ГЛАВНИОТ venv (пред да се спречи).**
+Прв обид (`pip install langflow`, не `python -m pip install`) паднал со
+"ERROR: To modify pip, please run... python.exe -m pip install langflow"
+- познат Windows pip gotcha (пакетот бара pip self-upgrade, а bare `pip`
+command се откажува да се самомодифицира). Втор обид (со точната
+поправка, `python.exe -m pip install langflow`) успешно поминал низ
+резолуција на зависности - но при инспекција на логот откриено е дека
+Langflow повлекува **сопствени верзии на `langgraph` и `langchain`** како
+транзитивни зависности (LangChain framework, не нашиот код) - директен
+ризик за верзиски конфликт со референтната LangGraph имплементација
+(`langgraph==1.2.10`) веќе инсталирана и тестирана во истиот venv.
+Инсталацијата е прекината (`Stop-Process -Force` на точно идентификуваните
+PID-и на pip-процесите, потврдени преку `Get-CimInstance Win32_Process`
+command-line проверка за да не се убијат mock_firewall/guardrail_api
+uvicorn процесите кои исто работат од истиот venv python.exe) пред да
+стигне до реална замена на `langgraph`/`langchain` пакетите.
+
+**Верификација на штета по прекинот:** `pip show langgraph` -> сѐ уште
+`1.2.10` (недопрено); `fastapi` 0.141.1, `ollama` 0.6.2 - сите непроменети.
+Единствена промена: `pip` self-upgrade (24.0 -> 26.2.1) и `packaging`
+downgrade (26.2 -> 24.2) - потврдено безопасно преку целосен import-test
+на сите `guardrails/*.py` модули плус реално извршување на
+`graph_v1.py::run_pipeline()` (edge_incomplete intent, резултат
+`rejected_at_intent_parser` - точно очекуваното однесување).
+
+**Одлука:** Langflow се инсталира во ПОСЕБЕН, изолиран venv
+(`langflow-poc/venv_langflow/`), целосно одвоен од главниот `venv/` каде
+работат LangGraph/guardrails/test-harness. Ова целосно го елиминира
+ризикот од верзиски drift наместо само да го открие post-factum секој пат.
+
+**Импликација:** кога orchestration платформата самата е изградена на
+истиот framework-family како референтната имплементација (Langflow е
+изграден на LangChain/LangGraph internally), венвironment isolation не е
+опционална претпазливост туку задолжителна пред-градба чекор - истото
+важеше имплицитно и за n8n (Node.js процес, целосно одвоен runtime), но
+тука требаше експлицитна одлука бидејќи и двете се Python.
+
+## 26. Langflow "Setup Provider" за Ollama на Language Model компонентата - статичен каталог на познати model-family имиња, НЕ жива `ollama list` резолуција, и кликот на модел-име не го enable-ира моделот
+
+**Проблем:** при обид да се конфигурира Ollama провајдер за првата
+"Language Model" компонента (Наод #25 план, чекор 1 - intent_parser),
+листата на достапни модели во "Model providers" дијалогот прикажува
+генерички model-family имиња (`llama3.3`, `qwq`, `llama3.2`, `qwen2`,
+`qwen2.5`, `mistral`, итн. - 37 вкупно за Ollama), а не точните
+locally-installed tags. Пребарување по точниот tag `qwen2.5:7b` (истиот
+модел користен низ целата LangGraph/n8n споредба) враќа "No models match
+your search." - само базното име `qwen2.5` (без tag) постои во листата.
+
+**Верификација (преку directен fetch/XHR кон Langflow backend
+ендпоинтите, не само UI набљудување - Network tab следење по барање на
+менторката/корисничката):**
+- `GET /api/v1/models?...&purpose=configure` за `provider_id: "ollama"`
+  враќа `"is_configured": false, "is_enabled": false, "live_discovery": true`
+  - и покрај претходно кликнато "Save" на Base URL полето (default
+  `http://localhost:11434`, непроменето). `live_discovery: true` сугерира
+  дека платформата ПОДДРЖУВА жива детекција од реален Ollama сервер, но
+  моментален статус не е "configured", па засега прикажува статичен
+  fallback каталог.
+- Клик на `qwen2.5` во филтрираниот приказ на листата генерира нов `GET
+  /api/v1/models?...` повик (потврдено преку read_network_requests), но
+  проверка на `GET /api/v1/models/enabled_models?...` веднаш ПОТОА
+  покажува `"Ollama": {..., "qwen2.5": false, ...}` - непроменето, кликот
+  НЕ го enable-ира моделот. Нема директен browser-инициран повик кон
+  Ollama (`localhost:11434`) - очекувано, бидејќи Langflow backend
+  процесот (не browser JS) би комуницирал со Ollama, ако воопшто.
+
+**Заклучок (за сега, потребна дополнителна проверка пред следен чекор):**
+ниту "опцијата б" (изборот работи зад кулисите, само нема визуелна
+потврда) ниту чистата "опцијата в" (пребарувањето е единствениот проблем)
+целосно не одговараат - изгледа провајдерот прво мора успешно да се
+"конфигурира" (Base URL зачуван И валидиран од backend-от против реален
+Ollama одговор, `is_configured` да стане `true`), пред моделите воопшто
+да станат избирливи преку некој друг контролен елемент (веројатно
+toggle/checkbox по успешна конфигурација, не обичен клик на текст-редот
+во листата). Ова сè уште не е потврдено - следен чекор е да се провери
+дали постои видлива грешка/success порака при "Save" (можеби Save не
+успева тивко ако Ollama не е достапен во моментот, или полето бара
+експлицитен "Test connection" чекор што сè уште не сум го најдено во UI).
+
+**Вистински root cause (потврдено): истиот `localhost`/`127.0.0.1`
+gotcha како n8n-овиот Наод #15, само во нов контекст.** Base URL полето
+беше на default `http://localhost:11434` кога статичниот fallback каталог
+се прикажуваше (`is_configured: false`). Штом Base URL е рачно сменето на
+`http://127.0.0.1:11434` и "Save" кликнато повторно, дијалогот веднаш
+прикажал "Loading providers..." па потоа: зелен checkmark на URL полето,
+"Ollama · 1 model" во левата листа, "Disconnect"/"Replace" копчиња, и
+клучно - "Language Models" секцијата сега прикажува ТОЧНО и САМО
+`qwen2.5:7b` (точниот tag, единствениот модел, веќе toggled ON преку
+switch контрола). Потврдено преку directen fetch на
+`/api/v1/models?...&purpose=configure`: `is_configured: true, is_enabled:
+true, live_discovery: true, num_models: 1, models: ["qwen2.5:7b"]` -
+живата детекција (`live_discovery`) навистина работи и точно го препознава
+локално инсталираниот модел, штом провајдерот е успешно "конфигуриран"
+преку исправната IP адреса. Language Model компонентата на canvas-от
+веднаш го одразила изборот - dropdown полето сега прикажува "qwen2.5:7b"
+избрано.
+
+**Заклучок:** статичниот 37-модел каталог (без live discovery) се
+прикажуваше само затоа што backend-от НИКОГАШ не успеал реално да се
+поврзе на Ollama преку hostname `localhost` (истата root cause како n8n
+Наод #15 - веројатно IPv6-first резолуција некаде во Python HTTP client
+слојот или самиот Uvicorn/Langflow сервер на оваа Windows машина, аналогно
+на Node.js однесувањето, иако Langflow е Python-базиран - вреди да се
+напомене дека овој gotcha не е Node.js-специфичен како првично
+претпоставено во Наод #15, туку поширок Windows-loopback-resolution
+проблем). **Импликација за трудот:** ова е трет независен потврден пример
+(n8n Ollama credential, а сега и Langflow Ollama provider) на истата
+platform-agnostic Windows-специфична loopback DNS стапица - силна причина
+да се преформулира Наод #15 во трудот како "Windows loopback resolution
+gotcha", не n8n/Node.js-специфичен наод. Чекор 1 (intent_parser) сега може
+да продолжи со точниот модел потврден.
+
+## 27. Langflow "Language Model" компонента: "Input" полето е single-line `<input>` (не `<textarea>`) - долг multi-line prompt мора да оди во "System Message" (кое ИМА "Expand text editor")
+
+**Проблем:** обид да се внесе целиот `intent_parser_node` prompt (7+ редови
+со експлицитни `\n` преломи, форматска листа за `confidence` скалата) во
+"Input" полето резултирал во целосно губење на сите нови редови - целиот
+текст паднал во еден единствен ред без preломи, потврдено преку directen
+DOM read (`el.value` без `\n` карактери) откако визуелно изгледаше "ОК" во
+компактното поле.
+
+**Причина (потврдено преку DOM инспекција):** "Input" полето на "Language
+Model" компонентата е вистински `<input type="text">` HTML елемент (не
+`<textarea>`) - `el.tagName === "INPUT"`. Секое поставување вредност преку
+`.value` (директно или преку browser automation) автоматски ги отфрла
+новите редови бидејќи `<input>` елементите структурно не поддржуваат
+multi-line содржина, без разлика на алатката/методот на внесување.
+
+**Решение:** "System Message" полето (веднаш под "Input") ИМА посебна
+"Expand text editor" копче што отвора вистински `<textarea>` overlay
+("Edit text content" дијалог) - таму сите нови редови се коректно зачувани
+(потврдено преку DOM read на overlay-от, идентично word-for-word со
+`graph_v1.py::intent_parser_node`). Финалната поделба:
+- **System Message** (expand editor): целиот фиксен дел од промптот
+  (инструкции + confidence скала + JSON формат), збор-за-збор идентичен
+  со `graph_v1.py`, до (но не вклучувајќи) "Барање: " линијата.
+- **Input** (кратко single-line поле): само динамичкиот `raw_request`
+  текст (за изолираниот тест: "Дозволи пристап од 10.0.5.0/24 до
+  10.0.10.15 на порт 443 преку TCP.").
+
+**Верификација на резултатот:** "Run component" (изолирано извршување на
+само оваа компонента) - 305 tokens, 28.6s (во согласност со Ollama
+cold-start времиња забележани и во LangGraph/n8n). "Component Output" →
+"Outputs" таб прикажува чист JSON, потврдено и преку directen DOM read на
+output textarea вредноста (не само screenshot):
+`{"source_subnet":"10.0.5.0/24","dest_subnet":"10.0.10.15","dest_port":443,"protocol":"tcp","confidence":1.0}`
+- точно очекуваниот резултат, идентичен со LangGraph/n8n за истиот тест
+input, БЕЗ markdown fence или дополнителна проза (за разлика од n8n-овите
+Наод #18/#19/#21 markdown-fence проблеми на подоцнежни чекори).
+
+**Импликација за трудот:** ова е чист пример на платформо-специфично UI
+ограничување (не LLM однесување) - Langflow-овата архитектонска
+претпоставка е дека "Input" е за кратка runtime/dynamic вредност (обично
+поврзана од upstream компонента преку handle, не рачно внесена долга
+статична инструкција), додека "System Message" е наменето за подолги
+статични инструкции. Ова е ПОДОБРА структурна поделба од n8n-овиот пристап
+(каде целиот промпт, статичен + динамичен дел заедно, оди во едно "User
+Message" поле - Наод #16/#17), но бара експлицитна одлука за поделба на
+секој идентичен промпт пред да се пренесе од LangGraph/n8n во Langflow -
+не е автоматско copy-paste. Истата поделба (фиксен дел → System Message,
+динамичен дел → Input) ќе се примени конзистентно за сите преостанати
+LLM-чекори (validator, policy_checker, planner) во понатамошната градба.
+
+## 28. Langflow "Language Model" компонента - изборот на Ollama модел (qwen2.5:7b) целосно се губи по секое напуштање на flow-от (пр. навигација до "Flows" листата и назад), и полето остане трајно заглавено на "Loading models." освен по целосен page reload
+
+**Проблем:** по враќање во истиот flow (in-app клик на "New Flow" од
+"Flows" листата, НЕ hard navigate) откако веќе бев конфигурирал
+"qwen2.5:7b" и добил успешен изолиран run (Наод #27), проверка преку
+directen fetch на `/api/v1/flows/{id}` покажа `model_name: "", provider:
+""` - целосно испразнето, и покрај тоа што статичниот текст
+(Input/System Message) сепак останал зачуван. UI dropdown-от визуелно
+покажуваше "Loading models." трајно - клик на него не отворал ниту
+dropdown ниту друг видлив ефект, дури и по повеќекратни обиди со
+различни методи (coordinate click, ref-based click преку accessibility
+tree - секој ref бил "stale" веднаш штом се обидев да го употребам,
+сугерирајќи постојан re-render loop додека полето е во "loading" state).
+
+**Решение (потврдено, единствено што проработи):** целосен browser page
+reload (`location.reload()`) на истата URL (не навигација кон друга
+страница) - по reload-от, "Loading models." состојанието исчезнало
+(полето прикажало празно/default состојание), и по нов клик, dropdown-от
+коректно се отворил со `qwen2.5:7b` веќе достапен и означен (checked) во
+листата - реселектирањето потоа веднаш успеало.
+
+**Импликација за трудот - методолошки критично за идно тестирање:**
+ова е трет пример (по Наод #20 n8n session-expiry и #24 n8n
+pin-after-resume) на "state кое изгледа зачувано, но всушност не е"
+однесување во orchestration платформа UI, специфично за Langflow. За
+разлика од текстуалните полиња (кои се зачувуваат нормално преку
+периодичен auto-save механизам на flow-от), моделската конфигурација
+(provider+model_name врска воспоставена преку "Model providers"
+дијалогот) изгледа живее ВО ОДДЕЛНА, посесиски-специфична browser-side
+состојба (веројатно во-memory кеш на резултатот од live Ollama discovery
+повикот, не во самиот persisted flow JSON) која НЕ преживува
+tab-navigation циклус. **Практична последица за понатамошна градба:**
+секој пат кога флоуто се напушта и се враќа (дури и in-app, без hard
+refresh), моделскиот избор на СЕКОЈА Language Model компонента мора
+рачно да се провери и, ако е потребно, да се ре-избере пред да се потпре
+на изолиран run - молчешкум потпирање врз стар screenshot/претходна
+верификација би можело да тестира со празен/непостоечки модел
+(веројатно резултирајќи во runtime грешка, не тивок неуспех - сепак не е
+тестирано директно во оваа сесија, треба да се потврди при следен
+"Run component" обид ако полето остане празно).
+
+## 29. Автоматизирано drag-and-drop поврзување на компонентни handles (React Flow канвасот) не функционира преку browser automation алатката во оваа сесија - методолошко ограничување на алатката, не на Langflow
+
+**Проблем:** по успешно тестираниот Language Model чекор (Наод #27) и
+конфигурираниот API Request нод (Наод #26), обид да се поврзе Language
+Model-овиот "Model Response" излез со следен нод (прво директно кон API
+Request "Body", потоа преку посредна "Data Operations" компонента со
+Input Type=JSON, за конверзија на Message→JSON тип бидејќи "Body"
+handle-от прифаќа само `Data`/`JSON` типови, потврдено преку hover
+tooltip "Inputs types: Data, JSON") не успеа со НИТУ ЕДЕН од три обиени
+методи:
+
+1. `computer` алатката left_click_drag со приближни екрански координати
+2. Истата алатка со ТОЧНИ координати земени директно од
+   `getBoundingClientRect()` на handle DOM елементите (потврдено преку
+   `document.elementFromPoint()` дека почетната И крајната точка точно
+   ги погодуваат посакуваните `.react-flow__handle` елементи пред drag-от)
+3. JS-симулирани `PointerEvent` низи (pointerdown → повеќе pointermove
+   чекори со delay → pointerup), директно dispatch-увани на точните
+   handle елементи
+
+Во сите три случаи, `document.querySelectorAll('.react-flow__edge').length`
+останува `0` по обидот - React Flow канвасот никогаш не ја регистрира
+конекцијата, и покрај потврдено точно погодување на двете крајни точки.
+
+**Заклучок:** ова е ограничување на browser automation алатката
+(Claude Browser pane во оваа сесија) со React Flow-базираниот drag-to-
+connect механизам, НЕ проблем со Langflow UI-от самиот или со моето
+разбирање на архитектурата - веројатно React Flow-овиот XYHandle систем
+бара погранулирана/поинаква низа на mousemove настани (или разчитува на
+специфични browser-native drag events кои автоматизираната алатка не ги
+репродуцира точно) за да детектира валидна "hover над цел" состојба пред
+drop. Ова е нов тип наод во однос на претходните платформо-специфични
+gotchas (#15, #17, #20, #22, #24, #26, #28) - оние беа своства/бубу на
+самата платформа откриени преку правилна интеракција; овој е ограничување
+на МЕТОДОТ на интеракција (автоматизирана browser контрола) наспроти
+рачна човечка интеракција со глушка, специфично релевантно за секој иден
+Langflow-градба чекор што бара визуелно поврзување компонент-до-компонент
+(секој чекор по chekор 1 ќе бара исти connections). **Практична
+последица:** node-to-node поврзувањата во Langflow веројатно ќе бараат
+или (а) рачна интервенција од корисникот директно во browser panel-от
+(корисникот презема контрола и повлекува линии рачно), или (б)
+алтернативен програмски пат за конструирање на flow JSON-от директно (пр.
+преку `/api/v1/flows/{id}` PATCH со рачно составен `edges` низа во
+истиот формат како во flow JSON-от), заобиколувајќи ја целосно UI drag
+интеракцијата.
+
+## 30. Опција (б) од Наод #29 успешно применета: `/api/v1/flows/{id}` PATCH bypass за edges - но откри 2 длабоки Langflow платформски механизми кои не се очигледни од UI-от
+
+**Контекст:** по експлицитно барање и одобрение (со задолжителни safety чекори:
+GET пред пишување, точен формат, PATCH, верификација на ДВА независни
+начини - backend GET + визуелен screenshot по UI reload, и реално
+извршување на flow-от), е применет директен API bypass за поврзување на
+компонентите наместо UI drag.
+
+**Чекор 1 - формат на handle стрингови (успешен веднаш):** секој
+`data-handleid` DOM атрибут на `.react-flow__handle` елементите содржи
+JSON-encoded објект каде секој дупли-quote карактер (`"`) е заменет со
+`œ` (Langflow-специфична ескејп конвенција за вградување JSON во HTML
+атрибути/React keys). Конструирање на edge објект со точно
+истиот формат (`{source, sourceHandle, target, targetHandle, data:
+{sourceHandle, targetHandle}, id, className}`, каде `id` е буквално
+`reactflow__edge-{source}{sourceHandleStr}-{target}{targetHandleStr}`)
+и PATCH до `/api/v1/flows/{id}` со `{data: {...целосен data објект со
+изменето edges}}` веднаш работи - потврдено и преку `GET` (edges низата
+го содржи новиот запис) и преку `document.querySelectorAll
+('.react-flow__edge').length` по UI reload (визуелна линија навистина
+се црта на канвасот).
+
+**Чекор 2 - "invalid handles" грешка при "Run": типска некомпатибилност,
+НЕ bug во конструкцијата.** Прв обид поврза Language Model (output type
+`Message`) директно кон API Request "Body" (input_types `Data`/`JSON`)
+и, посредно, кон "Data Operations" компонента чие "data" поле (Input
+Type=JSON режим) исто бара `Data`/`JSON`, никогаш `Message`. И двете
+комбинации легитимно паѓаат со "Edge between X and Y has invalid
+handles" при "Run" - ова НЕ е bug во API bypass пристапот, туку точна
+type-safety валидација на Langflow (`Message` навистина не е меѓу
+декларираните `input_types` на ниту едно од тие полиња). **Лекција:**
+секогаш прво провери `output_types` на изворот наспроти `input_types`
+на целта (двете достапни директно во `/api/v1/flows/{id}` JSON-от, без
+потреба од UI hover) пред да се конструира edge - "invalid handles" е
+корисна, точна грешка, не артефакт на bypass методот.
+
+**Точен fix:** "Data Operations" компонентата воопшто не е
+соодветна за Message→JSON конверзија (нејзините Text-режим операции се
+чисто текстуални - case conversion, replace, extract, head/tail/strip -
+ниту една не парсира JSON; JSON-режимот бара веќе-структуриран
+`Data`/`JSON` влез, не суров текст). Пронајдена е соодветна компонента
+преку `/api/v1/all` (целосен каталог на сите компоненти по категорија,
+достапен и за компоненти скриени од sidebar picker-от): "MessagetoData"
+(processing category) прецизно прави Message→JSON конверзија, но е
+означена `"legacy": true, "beta": true` со `"replacement":
+["processing.TypeConverterComponent"]` во сопствената шема - затоа не се
+појавува во sidebar пребарувањето (`"Message to Data"` враќа "No
+components found", легитимно UI однесување за legacy компоненти, не
+грешка). Официјалната замена, "Type Convert" (`TypeConverterComponent`,
+`legacy: false`), е употребена наместо тоа - едно "Input" поле (прифаќа
+`Message,Data,JSON,DataFrame,Table`) и "Output Type" таб-селектор
+(Message/JSON/Table) со 3 соодветни излези (`message_output`,
+`data_output` типа JSON, `dataframe_output`).
+
+**Чекор 3 - најсуптилниот наод: групирани/селектирачки излези (grouped
+outputs) не се самo "вредност на поле" - "output_type" полето поседува
+`"real_time_refresh": true` и промена преку сурово JSON патчирање на
+`template.output_type.value` НЕ е доволна.** По прв обид (рачно
+поставување `value: "JSON"` преку PATCH), `Run` "invalid handles"
+грешката продолжи - истражување со `document.querySelectorAll` +
+повторни `GET` откри дека `tc.data.node.outputs` низата за
+`data_output` немаше `"selected"` поле воопшто (додека `message_output`
+имаше `"selected":"Message"` од default состојбата), и покрај точна
+`output_types`/`input_types` компатибилност. Обид да се "поправи" рачно
+(поставување `selected` на СИТЕ три outputs) привидно поминa PATCH-от,
+но по UI reload edge-от кон API Request конзистентно исчезнуваше
+(DOM+backend потврдија дека автоматскиот save на UI-то тивко го отфрлил
+"невалидниот" edge при секој следен reload/interaction - опасен "silent
+data loss" образец: сурова JSON промена на "селектор" поле не активира
+исто однесување како вистински UI клик). **Решение:** директен клик врз
+"JSON Output" опцијата во посебен "Output" dropdown (одделен element од
+"Output Type" tab-от!) на самиот Type Convert нод, преку нормална
+browser интеракција - по овој клик, `GET` покажа дека Langflow точно го
+поставил `"selected":"JSON"` САМО на `data_output` (без `selected` на
+другите два), автоматски преку саканиот "real_time_refresh" backend
+callback. Edge-от потоа преживеа reload перманентно.
+
+**Заклучок за трудот - методолошки критично:** API bypass пристапот
+(Опција б) е робустен и потврдено функционален за ЕДНОСТАВНИ, статични
+конекции (fixed input/output типови, како Language Model -> Type
+Convert "Input" поле), но НЕ треба да се користи за полиња чие однесување
+зависи од друга "real_time_refresh" контрола (групирани/условни излези)
+- за таквите полиња, задолжителен е реален UI клик за да се активира
+соодветниот backend callback што ја регенерира точната node schema.
+Ова е трет откриен пример (по #26 model selection, #28 loading-state
+stuck) на "state кое изгледа исто во сурова JSON форма, но всушност
+бара реална UI-интеракција за да се материјализира точно" - силна general
+methodological лекција за секаков иден automation/API-bypass пристап кон
+Langflow: **секогаш комбинирај bypass за структурни/едноставни промени
+(нови nodes, едноставни едges со фиксни типови) со реална UI интеракција
+за било кое поле што влијае на друго поле/behavior (real_time_refresh,
+tab-selectors, group outputs).**
+
+**Резултат по фиксот:** Целосен flow run (Language Model → Type Convert
+→ API Request) - Language Model успешно (305 tokens, 26.6s, идентичен
+JSON резултат како Наод #27), Type Convert успешно (13ms, тривијална
+конверзија), API Request паднал на НОВА, ИНФРАСТРУКТУРНА причина (не
+edge/handle проблем повеќе): "SSRF Protection: Hostname 127.0.0.1
+resolves to blocked IP address(es)... add it to
+LANGFLOW_SSRF_ALLOWED_HOSTS environment variable" - документирано
+посебно во Наод #31. Ова САМО ПО СЕБЕ е доказ дека API bypass
+пристапот целосно и коректно ги поврза сите 3 нода - податоците реално
+течеа низ синџирот сè до последниот чекор.
+
+## 31. Langflow вградена SSRF заштита го блокира API Request кон `127.0.0.1` (guardrail_api) по default - нов, трет независен пример на "loopback" платформска препрека
+
+**Проблем:** по успешно поврзување на сите 3 нода (Наод #30), "Run" на
+API Request нодот паднал со јасна, експлицитна грешка (не "invalid
+handles" повеќе): *"SSRF Protection: Hostname 127.0.0.1 resolves to
+blocked IP address(es): 127.0.0.1. To allow this hostname, add it to
+LANGFLOW_SSRF_ALLOWED_HOSTS environment variable."*
+
+**Причина:** Langflow има вградена SSRF (Server-Side Request Forgery)
+заштита на "API Request" компонентата (и веројатно секој друг
+HTTP-повикувачки компонент) која по default блокира барања кон
+loopback/private IP опсези (127.0.0.1, localhost, 10.x, 192.168.x,
+итн.) - разумна безбедносна default поставка за производствена употреба
+(спречува компонент во flow-от злоупотребен да прави внатрешни мрежни
+повици), но директно во судир со нашата архитектура каде `guardrail_api`
+(9100) и `mock_firewall` (9000) НАМЕРНО работат на localhost за
+локалното PoC тестирање.
+
+**Импликација за трудот:** ова е ЧЕТВРТ независен пример (по n8n Наод
+#15, Langflow Наод #26, Наод #28) на "loopback/localhost"-специфична
+платформска пречка при поврзување со локални PoC сервиси - но за разлика
+од претходните три (кои беа DNS resolution/UI state проблеми),
+оваа е НАМЕРНА безбедносна мерка, не bug/quirk. Силен аргумент за
+Methodology/Limitations секцијата: секоја "enterprise-grade"
+orchestration платформа (Langflow, веројатно и понови n8n верзии)
+вградува production-oriented safety defaults (SSRF заштита, rate
+limits, итн.) кои активно пречат при чисто локално PoC тестирање со
+mock-сервиси - секоја таква платформа бара експлицитна конфигурациска
+исклучок (env var, allow-list) пред да може воопшто да се тестира со
+локални backend-и, што е дополнителен, платформо-специфичен "setup
+трошок" вреден за споредба меѓу трите платформи (LangGraph и n8n
+немаа таков трошок - директен Python import, односно едноставен
+HTTP node без вградена SSRF заштита).
+
+**Поправка (потврдена):** рестартиран Langflow серверот со
+`LANGFLOW_SSRF_ALLOWED_HOSTS=127.0.0.1,localhost` во околината пред
+`python -m langflow run`, во истиот изолиран venv (`langflow-poc/
+venv_langflow/`). Чисто серверска env поставка, применлива еднаш за
+целата идна градба (сите преостанати чекори 2-10 ќе повикуваат исти
+локални сервиси). По рестартот, API Request веднаш успешно стигнал до
+`guardrail_api` (`status_code: 200`) - SSRF пречката целосно отстранета
+без промена на flow-от или node конфигурацијата.
+
+## 32. Финален "invalid data shape" проблем по SSRF-фиксот: "Type Convert" (Output Type=JSON) само ГО ОБВИТКУВА суровиот текст во `{"text": "..."}`, не прави вистинско JSON парсирање - решено со "Auto Parse" advanced toggle
+
+**Проблем:** по успешниот SSRF fix, API Request успешно стигнал до
+`guardrail_api` (`status_code: 200`), но самата guardrail проверка
+паднала: `{"passed": false, "errors": ["schema_error: 'source_subnet'
+is a required property"]}`. Инспекција на "Type Convert" сопствениот
+"Inspect output" (не само крајниот резултат) открила дека тој испратил
+`{"text": "{\"source_subnet\":\"10.0.5.0/24\",...}"}` - целата очекувана
+JSON структура е ЗАРОБЕНА како стринг ВНАТРЕ во едно `"text"` поле,
+наместо да биде parse-увана во вистински dict со `source_subnet` итн.
+на прво ниво. "Output Type: JSON" сам по себе, значи, само ја менува
+ОБВИВКАТА (Message → генерички Data object со `.text` атрибут), не и
+самата содржина - "Type Convert" по default НЕ обидува JSON.loads() на
+влезниот текст.
+
+**Причина/решение:** компонентата има посебно, ADVANCED (стандардно
+скриено, не се гледа во компактниот приказ на нодот) bool поле "Auto
+Parse" - "Detect and convert JSON/CSV strings automatically" - default
+`false`. Откриено преку `/api/v1/all` инспекција на целосната
+компонентна шема (не преку UI hover/docs). Откако е прикажано преку
+"Parameters" -> "+ Add" и вклучено преку реален UI toggle click (не
+сурово JSON патчирање - веќе научена лекција од Наод #30 за
+real_time_refresh-зависни полиња, иако овој конкретен bool можеби ќе
+работеше и преку сурово патчирање, безбедно е да се третира секое
+"однесувачки значајно" поле со реален клик), Type Convert веднаш
+испратил правилно parse-уван JSON, и целиот синџир поминал:
+`guardrail_api` вратил `{"passed": true, "errors": []}`, `status_code:
+200` - идентичен успешен guardrail резултат како во LangGraph/n8n за
+истиот тест input.
+
+**Финален потврден синџир (чекор 1, целосно функционален): Language
+Model (qwen2.5:7b, точен prompt) → Type Convert (Output Type=JSON,
+Auto Parse=true) → API Request (POST кон
+`http://127.0.0.1:9100/check/intent_parser`) → guardrail_api → `passed:
+true`.** Ова е првиот целосно функционален, крај-до-крај потврден
+guardrail чекор во Langflow имплементацијата, изграден целосно преку
+комбинација на: (а) drag-and-drop за нови nodes (работи нормално), (б)
+API bypass преку `/api/v1/flows/{id}` PATCH за edges конкретно (единствен
+начин откриен во оваа сесија да функционира за node-до-node
+поврзувања), и (в) реална UI интеракција за секое поле што влијае на
+друго поле/behavior (модел избор, output-type селектор, advanced
+toggles).
+
+**Импликација за трудот:** трите скриени "output shaping" механизми
+откриени во оваа Langflow сесија (data_output "selected" мора да биде
+поставено преку real UI клик - Наод #30; "Auto Parse" advanced toggle
+мора експлицитно да се вклучи за вистинско JSON парсирање - овој наод;
+"Output Type" tab наспроти одделен "Output" dropdown - Наод #30) сите
+се НЕ-очигледни од самиот компактен UI приказ на нодот - секој бараше
+или инспекција на целосната компонентна шема преку `/api/v1/all`, или
+експериментално "trial-and-error" преку "Inspect output" на секој
+меѓучекор во синџирот, не само крајниот резултат. Ова е силен методолошки
+аргумент: во Langflow, debugging на "невалиден резултат на крајот на
+синџирот" бара инспекција на секој МЕЃУЧЕКОР (не само финалниот output),
+бидејќи грешката најчесто не е во конекцијата туку во суптилна,
+"скриена зад Advanced-копче" конфигурациска поставка на еден од
+меѓу-нодовите.
+
+## 33. Потврдено: НЕ постои кратенка - "Type Convert" мостот (Message→JSON) е задолжителен за СЕКОЈ иден LLM→guardrail_api чекор, аналогно на n8n-овиот "Fixed vs Expression" наод (#22)
+
+**Прашање (поставено од менторката/корисничката):** дали "Data
+Operations"/"Type Convert" мостот воопшто е потребен за секој од
+преостанатите 9 чекори (validator, policy_checker, planner, итн.), или
+API Request компонентата има вградена Message->JSON авто-конверзија на
+"Body" полето, што би ја заштедило потребата од посреден нод по секој
+LLM повик.
+
+**Истражување (преку `/api/v1/all`, целосна компонентна шема, не
+претпоставка):**
+- API Request "Body" поле: `input_types: ["Data","JSON"]`,
+  `type: "table"` - ФИКСНО, нема "Message" во листата на прифатени
+  типови, ниту опција/checkbox за авто-конверзија некаде во целосната
+  template шема (сите полиња на APIRequest се проверени:
+  `body, code, curl_input, follow_redirects, headers,
+  include_httpx_metadata, method, mode, query_params, save_to_file,
+  timeout, url_input` - ниту едно не е "auto-convert Message" тип
+  опција).
+- "Data Operations" (Text режим) "Operation" опции: Word Count, Case
+  Conversion, Text Replace, Text Extract, Text Head/Tail/Strip/Join/
+  Clean, Text to DataFrame - НИТУ ЕДНА не парсира JSON во структуриран
+  Data/dict (потврдено преку целосна `operation.options` листа од
+  шемата, не само визуелна проверка на dropdown-от).
+
+**Заклучок: НЕ постои кратенка.** Секој LLM чекор во Langflow чиј излез
+(секогаш тип `Message`, единствениот текстуален output type на
+"Language Model" компонентата - `text_output`) треба да стигне до
+guardrail_api (чиј "Body" влез е строго `Data`/`JSON`) МОРА да помине
+низ посреден type-conversion нод. Меѓу испробаните опции, "Type Convert"
+(`TypeConverterComponent`, не-legacy) со **Auto Parse=true** (Наод #32)
+е единствениот што реално работи - "Data Operations" воопшто нема
+соодветна операција, а "MessagetoData"/"Parse JSON"/"JSON Cleaner" се
+сите означени `legacy: true` во сопствената шема (не се препорачуваат,
+и "MessagetoData" не е ни достапен во sidebar picker-от).
+
+**Повторлив образец за преостанатите чекори (validator,
+policy_checker, netbox_check, planner, dry_run, verify):** секој LLM
+чекор ќе бара идентична 3-нодовска "sandwich" структура:
+`Language Model` (System Message=фиксни инструкции, Input=динамички
+дел) → `Type Convert` (Output Type=JSON, **Auto Parse=true** -
+задолжително да не се заборави при секое повторување) → `API Request`
+(POST кон соодветниот `guardrail_api` endpoint, Body поврзано од Type
+Convert-овиот JSON Output). Оваа тројка е Langflow-скиот еквивалент на
+n8n-овиот "секое String-type body поле бара експлицитен Fixed→Expression
+toggle" наод (#22) - платформо-специфичен "type coercion" трошок кој
+мора рачно да се применува на секој чекор, не еднократна поставка на
+ниво на flow.
+
+**Времетраење на инвестигацијата:** оваа целосна истрага (Data
+Operations неуспех → MessagetoData legacy откритие → Type Convert
+пронајдок → "selected" real_time_refresh проблем → SSRF проблем → Auto
+Parse проблем) заедно траеше значително подолго од еквивалентниот n8n
+чекор (Наод #16-19, кои имаа готов "Ollama Chat Model"/"HTTP Request"
+образец веднаш препознатлив). Ова е самостоен, вреден наод за
+Discussion/Limitations - Langflow-овиот "visual-first" пристап со
+type-strict handles бара повеќе почетна инвестигација по chekор/тип на
+конекција отколку n8n-овиот послободен "expression"-базиран пристап,
+но еднаш откриен, образецот е механички повторлив (копирај-инсертирај
+истата тројка за секој нареден чекор).
+
+## 34. Чекор 1 (intent_parser) целосно комплетиран во Langflow - вклучувајќи If-Else условно рутирање, аналогно на LangGraph route_after_check / n8n If1
+
+**Компонента за условно рутирање:** "If-Else" (`ConditionalRouter`,
+не-legacy) - "Routes an input message to a corresponding output based
+on text comparison." Работи ИСКЛУЧИВО на text (Message тип) споредба
+(`input_text` vs `match_text` преку `operator`), нема верзија што
+директно споредува поле од Data/JSON објект (постои `DataConditionalRouter`
+со `key_name`/`compare_value` за токму тоа, но е означен `legacy: true`
+- не е користен, за конзистентност со "избегнувај legacy компоненти"
+принципот воспоставен во Наод #30).
+
+**Целосна финална архитектура за чекор 1 (5 нода):**
+```
+Language Model (System Message=фиксни инструкции, Input=raw_request)
+  -> Type Convert #1 (Output Type=JSON, Auto Parse=true)
+  -> API Request (POST http://127.0.0.1:9100/check/intent_parser, Body=Type Convert#1 JSON output)
+  -> Type Convert #2 (Output Type=Message, default settings - НЕ треба Auto Parse тука, бидејќи насоката е JSON->Message, не обратно)
+  -> If-Else (Operator=contains, Match Text="'passed': True")
+```
+
+**Клучен наод за If-Else конфигурацијата:** Type Convert #2 (JSON→Message
+насока) не прави `json.dumps()` туку Python `str(dict)` репрезентација -
+резултатот е `{'source': '...', 'status_code': 200, ..., 'result':
+{'passed': True, 'errors': []}}` (single quotes, Python `True` со
+голема буква, НЕ `"passed": true` JSON-стил малा буква). Ова е
+директно откриено преку "Inspect output" на Type Convert #2 ПРЕД
+конфигурирање на If-Else - потврдено емпириски, не претпоставено од
+JSON конвенција. **Match Text мора да биде `'passed': True` (Python
+repr формат), не `"passed": true` (JSON формат)** - лесно место за
+грешка ако некој претпостави JSON стил без прво да го инспектира
+вистинскиот текст. `operator="contains"` е избран наместо `"equals"`
+бидејќи целата структура (не само полето `passed`) е она што стигнува
+до `input_text` - нема механизам во If-Else компонентата за
+"navigate до вгнездено поле" (за разлика од LangGraph `state["result"]
+["passed"]` директен пристап или n8n `{{ $json.result.passed }}`
+expression) - `contains` е практичен заобиколен пат, аналоген на
+n8n-овиот JS-extraction пристап од Наод #18.
+
+**Верификација на резултатот (два независни начини, како и претходно):**
+1. "Inspect output" на If-Else "True" излезот - содржи целосниот
+   guardrail response (значи гранката се активирала и низ неа поминале
+   податоци).
+2. Accessibility tree читање на "False" излезот - сè уште вели "Please
+   build the component first" (никогаш не е построен/извршен), додека
+   "True" вели "Inspect output" (веќе изграден) - недвосмислена, лесно
+   проверлива потврда дека САМО True гранката се активирала за валиден
+   `guaranteed_safe`-стил тест intent (истиот фиксен тест-request
+   користен низ целата LangGraph/n8n/Langflow споредба).
+
+**Времетраење на целиот 5-нодовски синџир:** ~8-25s вкупно по извршување
+(доминирано од Ollama LLM повикот, 8.4-26.6s забележано низ повеќе
+извршувања; преостанатите 4 нода заедно трошат <1s: API Request ~300-500ms,
+двата Type Convert ~10-20ms секој, If-Else ~10ms).
+
+**Статус:** Чекор 1 (Табела 1) е ПРВИОТ целосно завршен и потврден
+Langflow чекор, вклучувајќи го условното рутирање - следи истиот принцип
+како и во LangGraph/n8n имплементациите ("секој чекор мора да е целосно
+завршен, вклучувајќи routing, пред премин на следниот"). Образецот
+(Language Model -> Type Convert(JSON) -> API Request -> Type
+Convert(Message) -> If-Else) е сега целосно механички повторлив за
+преостанатите чекори (validator, netbox_check, policy_checker, planner,
+dry_run, verify) - секој ќе бара само промена на: System Message текст,
+API Request URL (endpoint), и можеби Match Text содржина ако полето
+за проверка се разликува од `passed`.
+
+## 35. Дополнување на Наод #30: кога API bypass создава НОВ нод "од нула" (не преку UI drag), полиња кои во UI биле рачно откриени преку "+ Add" (Parameters панелот) остануваат `"advanced": true` - конекција кон нив тивко се отфрла на ист начин како "selected" проблемот
+
+**Проблем:** при градба на чекор 2 (validator) со идентичен образец како
+чекор 1, конекцијата "Type Convert -> API Request (Body)" постојано
+исчезнуваше по секој reload - идентично однесување како Наод #30, но
+"selected" полето беше веќе точно поставено (`"JSON"`), исклучувајќи ја
+таа причина. Дури и целосно елиминирање на секаква UI интеракција меѓу
+PATCH и reload (директен PATCH → веднаш GET потврда → веднаш reload, без
+ниту еден клик меѓу нив) не помогна - едгето секогаш се губеше ТОЧНО на
+reload, докажувајќи дека проблемот не е client-side autosave race, туку
+детерминистичка frontend load-time валидација.
+
+**Причина (пронајдена преку директна споредба на двата API Request нода
+JSON):** новиот API Request нод (создаден директно преку API bypass од
+`/api/v1/all` шемата, никогаш рачно допрен во UI) го има Body полето со
+`"advanced": true` (стандардна/default вредност во сирова компонентна
+шема - полето е скриено во компактниот приказ додека корисник рачно не
+кликне "Parameters" -> "+ Add", точно како што направив рачно за
+првиот API Request нод во чекор 1, Наод #26). Оригиналниот, working API
+Request нод (создаден преку UI drag + рачно "+ Add" за Body) го има
+истото поле со `"advanced": false`. Конекција кон `advanced: true` поле
+изгледа се третира како "невидлива за корисникот" врска и Langflow
+load-time логиката ја отфрла, аналогно на "selected" механизмот од
+Наод #30.
+
+**Решение:** директно поставување `api.data.node.template.body.advanced
+= false` преку истата PATCH операција (сурово JSON поле, НЕ бара
+"real_time_refresh" callback за разлика од "selected"/output-type
+случаите - едноставна видливост-toggle работеше веднаш преку сурово
+патчирање, потврдено: edge преживеа reload и во DOM (`8` edges) и во
+backend (`8` edges) по фиксот).
+
+**Генерализирано правило за идна градба (важно за преостанатите
+чекори):** кога се создава НОВ нод исклучиво преку API bypass (не преку
+UI drag), СЕКОЕ поле што ќе се користи како target на нова конекција, а
+чиј default `advanced` статус е `true` во сирова компонентна шема, мора
+експлицитно да се постави на `advanced: false` во истата PATCH операција
+ПРЕД да се додаде edge-от кон него - инаку edge-от ќе биде тивко
+отфрлен на секој следен reload, без никаква грешка порака (за разлика
+од "invalid handles" грешката која барем се гледа при "Run"). Ова е
+ЧЕТВРТ пример (по "selected" во Наод #30, "Auto Parse" во Наод #32, а
+сега "advanced" видливост) на "скриена конфигурациска состојба која
+мора рачно/експлицитно да се усогласи при API bypass creation, бидејќи
+UI drag+click патот автоматски ја поставува точно, но API bypass
+патот ја наследува само default вредностите од сирова компонентна
+шема." Проверка-листа за секој иден API-bypass-креиран нод: (1) дали
+таргет полето на нова конекција има `advanced: true` по default - ако
+да, постави `false`; (2) дали изворното поле е "групиран" output со
+"selected" механизам - ако да, потврди преку реален UI клик (Наод #30);
+(3) дали полето е bool toggle со behavioral ефект (пр. Auto Parse) - ако
+да, вклучи преку реален UI клик (Наод #32).
+
+## 36. Финален работен fence-stripping образец за чекор 2 (validator): "Type Convert" со Auto Parse НЕ е доверлив кога влезот доаѓа од друг компонент (не директно LLM) - "ParseJSONData" (legacy, вистински `json.loads()`) е точното решение; плус нов Langflow-специфичен `/api/v1/build` endpoint откриен и корисен за bypass на UI click проблеми
+
+**Контекст:** по успешен fence-stripping преку "Data Operations" (Text
+Extract, regex `\{[\s\S]*\}`) - Наод претходно во оваа сесија - следниот
+чекор во синџирот ("Type Convert", Output Type=JSON, Auto Parse=true) сè
+уште враќал `{"text": "<чист JSON стринг>"}` наместо вистински parse-уван
+dict, и покрај тоа што влезниот текст од Data Operations беше 100% чист
+JSON без markdown fence (потврдено преку directen инспекција на
+Data Operations сопствениот output). Ова се разликува од претходно
+опишаниот "Type Convert" успех (Наод #27, #30, #32) каде влезот доаѓаше
+ДИРЕКТНО од "Language Model" компонентата - таму Auto Parse работеше
+исправно.
+
+**Заклучок:** "Type Convert" (`TypeConverterComponent`) Auto Parse
+механизмот изгледа зависи од ТОЧНИОТ тип/потекло на влезниот `Message`
+објект (можеби препознава специфичен LangChain message class или
+метаподатоци кои само вистински LLM-генерирани пораки ги имаат), не
+само неговата текстуална содржина - кога Message доаѓа од друг генерички
+компонент (Data Operations), Auto Parse тивко пропаѓа и fallback-ува на
+едноставно `{"text": rawString}` обвиткување, БЕЗ никаква видлива грешка
+("valid": true во build логот!). Ова е ПЕТТИ, најсуптилен пример на
+"скриена состојба различна од очекуваната" во Langflow сесијата - за
+разлика од претходните 4 (Наод #26, #28, #30, #32), овој НЕ дава никаква
+грешка/предупредување дури ни во детален build лог - единствен начин да
+се открие е директна инспекција на секој меѓу-чекор излез (не само
+финалниот резултат), потврдувајќи ја лекцијата веќе запишана во Наод #32
+("debug секој меѓучекор, не само крајниот output").
+
+**Решение:** заменета "Type Convert" со "ParseJSONData" (`processing.
+ParseJSONData`, legacy но со чист, детерминистички `json.loads()` +
+`repair_json()` fallback + jq филтер механизам). Конфигурација: "JQ
+Query" поле поставено на `.` (identity filter - враќа го целиот влезен
+објект непроменет, без филтрирање на конкретни полиња). Излезот
+(`filtered_data`, тип JSON) веќе доаѓа со `"selected": "JSON"` по
+default (нема потреба од "output selector" UI чекор како кај Type
+Convert - Наод #30). **Нова зависност откриена и решена:** ParseJSONData
+интерно бара `jq` Python пакет (`import jq`) кој НЕ беше инсталиран во
+изолираниот `langflow-poc/venv_langflow/` - прв обид дал јасна грешка
+("jq is required for Parse JSON. Install with: pip install jq"),
+инсталиран веднаш преку `python.exe -m pip install jq` (успешно, 1.12.0),
+и работел ВЕДНАШ без потреба од рестарт на серверот (lazy import внатре
+во try/except блокот на компонентата, не import на ниво на модул при
+стартување).
+
+**Финален потврден 6-нодовски образец за секој идентичен-fence-ризичен
+чекор:** `Language Model -> Data Operations (Text Extract, regex
+\{[\s\S]*\}) -> ParseJSONData (JQ Query=".") -> API Request -> Type
+Convert (Message, за If-Else) -> If-Else`. За разлика од чекор 1 (кој не
+доживеа markdown fence во тестираните извршувања и работеше со само
+"Type Convert" директно по Language Model), чекор 2 (и веројатно секој
+нареден чекор со подолг/посложен prompt, аналогно на n8n Наод #6/#18)
+бара двете дополнителни компоненти (Data Operations + ParseJSONData)
+како стандарден "safety" префикс пред API Request, ако markdown fence
+се појави (не секогаш се јавува, но кога ќе се јави, пайплайнот мора да
+опстане).
+
+**Дополнителен методолошки алат откриен: `/api/v1/build/{flow_id}/flow`
++ `/api/v1/build/{job_id}/events` REST endpoints.** Откриени преку
+`/openapi.json` инспекција откако UI-базирано кликање на "Run component"
+стана непрецизно/ненадежно (browser automation координати постојано
+застаруваа при pan/zoom на канвасот). POST на build endpoint-от враќа
+`job_id`, GET на events endpoint-от го стримува целиот extended build лог
+(секој vertex, неговиот `valid` статус, целосен `outputs`/`message`
+JSON, и целосен `traceback` при грешка) - ова е ПОДОБАР начин за
+верификација на резултати од UI "Inspect output" кликање бидејќи дава
+структуриран, комплетен JSON одговор одеднаш за целиот синџир, без
+потреба од UI навигација/zoom/pan воопшто. **Ограничување:** овој
+endpoint споделува vertex-ниво кеш со UI-driven "Run" - повторени
+повици може да враќаат стари кеширани резултати за нодови чии влезови
+не сум ги менувал директно (забележано during debugging - идентичен
+build резултат по неколку последователни повици додека вистинскиот
+проблем не е поправен со ново PATCH). Препорака за идна употреба: секогаш
+PATCH-увај ја промената ПРВО, потоа повикај build - никогаш не
+претпоставувај дека втор build повик "можеби ќе даде свежи резултати"
+без претходна вистинска промена на flow-от.
+
+## 37. Чекор 3 (netbox_check) - потврдено дека мостот за markdown-fence е потребен САМО кога проблемот реално се манифестира, не превентивно; и дека mock/фиксни чекори не бараат LLM повик воопшто
+
+**Контекст:** netbox_check во LangGraph/n8n е чист mock stub - секогаш
+враќа фиксен `{"overlap_found": false, "existing_rules": []}`, без LLM
+повик (WSL2/NetBox недостапност на dev машината, документирано во Наод
+#8). По експлицитно барање, тестирано е ДАЛИ поедноставниот образец од
+чекор 1 (без Data Operations/ParseJSONData мост) е доволен пред
+превентивно да се додава fence-stripping секаде.
+
+**Клучен наод 1 - "Body" полето на API Request прифаќа СТАТИЧНА,
+рачно поставена вредност директно, без потреба од каков било upstream
+node.** За разлика од чекори 1-2 (каде Body доаѓа од LLM преку
+конекција), овде `template.body.value` е поставено директно преку PATCH
+на `[{"key":"overlap_found","value":false},{"key":"existing_rules","value":[]}]`
+(истиот key-value табеларен формат како table_schema-та бара) - без
+никаков upstream Language Model, Data Operations, или Type Convert
+пред API Request. Ова е директен Langflow-еквивалент на n8n-овото
+"Set" node/статичен JSON во HTTP Request body, или LangGraph-овиот
+буквален Python dict литерал во `netbox_check_node`.
+
+**Клучен наод 2 - поедноставниот образец (без fence-stripping мост) е
+ДОВОЛЕН кога влезот воопшто не поминува низ LLM.** Синџир: `API Request
+(статичен Body) -> Type Convert (JSON→Message) -> If-Else`, само 3 нода,
+БЕЗ Language Model, БЕЗ Data Operations, БЕЗ ParseJSONData. Тестирано
+изолирано преку `/api/v1/build` API - `passed: true` веднаш, во ИСТИОТ
+build повик каде чекори 1 и 2 (со LLM) исто дадоа `True` без грешки
+(потврдено дека чекор 3 не ги расипа претходните).
+
+**Потврда на методолошкото правило поставено од менторката:** fence-
+stripping мостот (Data Operations regex + ParseJSONData) е ПОТРЕБЕН
+единствено кога навистина има LLM-генерирана текстуална содржина која
+МОЖЕ да содржи markdown fence - за чисто-детерминистички/mock чекори
+(netbox_check, и веројатно секој иден чекор без LLM повик), едноставниот
+"Type Convert + Auto Parse" директно по статична/структурна вредност е
+секогаш доволен (нема LLM output воопшто да предизвика fence проблем).
+Ова значи дека одлуката "дали треба fence-stripping мост" зависи
+исклучиво од ДАЛИ чекорот повикува LLM, не од тоа кој chекор по ред е.
+
+**Верификација:** потврдено преку `/api/v1/build` API одговор (без UI
+click потреба) - `ConditionalRouter-netbox3` True излез содржи целосен
+`{'source': 'http://127.0.0.1:9100/check/netbox', 'status_code': 200,
+..., 'result': {'passed': True, 'errors': []}}`, False излез празен.
+Потврдено и преку `document.querySelectorAll` DOM read по UI reload
+(11 edges, 14 nodes, сите линии визуелно нацртани на канвасот) - двата
+независни методи се согласуваат. Сите три чекори (1, 2, 3) заедно
+тестирани во ЕДЕН build повик без грешки - потврдува дека новите нодови
+не влијаат на претходно потврдените синџири.
+
+## 38. Чекор 4 (policy_checker) - потврдено дека guardrail_api користи вистински semantic guardrail (независна CIDR/порт пресметка), и решен нов структурен предизвик: "обвиткан" payload преку ParseJSONData-овиот вграден jq механизам
+
+**Потврда на semantic guardrail-от (пред градба, преку читање
+`guardrails/check_policy.py`):** `/check/policy` endpoint-от НЕ прави
+само JSON schema валидација - `_ground_truth()` функцијата независно
+пресметува `ipaddress.ip_network(source_subnet).prefixlen < 16` и
+`dest_port in {22, 23, 3389}`, и го отфрла секое LLM тврдење за
+`risk_level` што не се согласува со пресметаните факти (Наод #3/#4/#7 од
+LangGraph). Идентична логика како во LangGraph/n8n имплементациите -
+фер споредба меѓу платформите потврдена и за Langflow.
+
+**Структурен предизвик специфичен за овој endpoint:** `/check/policy`
+(за разлика од `/check/intent_parser`, `/check/validator`,
+`/check/netbox` кои примаат payload директно) бара ОБВИТКАНА структура:
+`{"policy_result": {...LLM_output...}, "source_subnet": "...",
+"dest_port": ...}` (Pydantic `PolicyCheckRequest` модел во
+`guardrail_api.py`). LLM-от произведува само `{"policy_pass":...,
+"violations":[...], "risk_level":...}` - недостасуваат `source_subnet`/
+`dest_port` кои се веќе познати (статични за тест) но мора да се
+инјектираат во конечниот payload заедно со parse-увниот LLM излез.
+
+**Решение - искористен вградениот `jq` механизам на ParseJSONData
+(наместо посебен "combine/merge" нод):** "JQ Query" полето поставено на
+`{policy_result: ., source_subnet: "10.0.5.0/24", dest_port: 443}`
+наместо едноставен `.` (identity, користен во чекор 2) - jq-овиот
+object-construction синтакса (`{клуч: израз, ...}`) директно ја гради
+посакуваната обвивка во ЕДЕН чекор, без потреба од дополнителен
+"UpdateData"/"MergeDataComponent" нод. Ова е елегантно, единствено
+искористување на веќе присутната jq зависност (инсталирана во Наод #36)
+за нешто повеќе од проста `.` екстракција - вреден методолошки увид:
+ParseJSONData-овото JQ Query поле може да служи И за parse-ување И за
+реструктуирање/обвиткување во ист чекор.
+
+**Fence-stripping мост НЕ бил потребен (потврдено емпириски, не
+претпоставено):** LLM излезот во овој тест бил чист JSON без markdown
+fence - синџирот `Language Model -> ParseJSONData (jq wrap) -> API
+Request -> Type Convert -> If-Else` (5 нода, БЕЗ Data Operations)
+работел веднаш. Потврдува дека методолошкото правило од чекор 2/3
+("додади fence-мост само кога тестот покаже дека е потребен") се
+применува конзистентно - секој чекор посебно се тестира, мостот не се
+претпоставува автоматски.
+
+**Нов практичен gotcha решен - модел-избор за НОВ Language Model нод
+создаден исклучиво преку API bypass (без НИКАКВА UI интеракција
+воопшто, за разлика од Наод #26/#30 каде барем UI dropdown бил
+отворен):** build API веднаш вратил јасна грешка `"A model selection is
+required"` (чиста, разбирлива грешка - не тивок фallback). Решено со
+директно копирање на целата `template.model.value` и
+`template.model.options` структура (вклучувајќи `name`, `icon`,
+`provider`, целосен `metadata` објект со `context_length`,
+`model_class`, `model_name_param`, итн.) од веќе-конфигуриран working
+Language Model нод во истиот flow, преку PATCH. За разлика од
+"selected"/output-group механизмот (Наод #30) кој БАРАШЕ реален UI клик,
+овој ModelInput-тип механизам прифатил директно JSON копирање без
+проблем - потврдува дека не СИТЕ "скриени состојби" бараат UI
+интеракција, само оние поврзани со `real_time_refresh` callback-ови;
+статични податочни структури (како целосен избран модел објект) можат
+безбедно да се копираат byte-for-byte преку API кога постои веќе-работен
+пример во истиот flow за референца.
+
+**Верификација (двата независни начини):** `/api/v1/build` API - сите
+4 чекори тестирани заедно во ЕДЕН повик, `errCount: 0`,
+`ConditionalRouter-policy4` True излез содржи целосен `{'source':
+'http://127.0.0.1:9100/check/policy', ..., 'result': {'passed': True,
+'errors': []}}`, False празен. По UI reload,
+`document.querySelectorAll('.react-flow__edge').length` = 15 (точно
+совпаѓа со backend `edgeCount: 15`) - потврдено дека сите претходни
+синџири (1-3) остануваат неповредени по додавањето на чекор 4.
+
+## 39. Чекор 5 (planner) - fence-мостот е емпириски потребен; плус два нови инфраструктурни gotcha-и (tool timeout го прекинува Ollama повикот, и stale browser tab ги брише API-додадените нодови)
+
+**Payload:** `check_planner.py` прима LLM output директно (без обвивка,
+за разлика од `/check/policy` во Наод #38) - schema валидација плус
+`len(rollback_plan) >= 10`.
+
+**Тест без мост (правилото од чекор 2-4):** `Language Model -> Type
+Convert (Auto Parse) -> API Request -> Type Convert -> If-Else`. LLM-от
+вратил ```` ```json\n{...}\n``` ```` (pretty-printed, со fence), Type
+Convert го обвиткал во `{"text": ...}`, guardrail вратил `passed: false,
+"'proposed_rule_summary' is a required property"`, **False** гранката
+активна. Мостот е ПОТРЕБЕН - во согласност со Наод #6/#21: planner-от
+(три долги слободнотекстуални полиња) е најнестабилниот чекор по формат
+и во n8n.
+
+**Финален синџир (6 нода):** `Language Model -> Data Operations (Text
+Extract, \{[\s\S]*\}) -> ParseJSONData (jq ".") -> API Request
+(/check/planner) -> Type Convert -> If-Else`. Резултат: Data Operations
+излезот е чист JSON (fence отстранет, multi-line JSON правилно фатен со
+`[\s\S]*`), guardrail `{"passed": true, "errors": []}`, **True** гранка
+активна, False празна. DOM `.react-flow__edge` = 20 = backend
+`edgeCount: 20`.
+
+**Gotcha 1 - javascript_tool timeout (45s) го прекинува самиот Ollama
+повик.** Синхрон `await` на `/api/v1/build/{job}/events` за planner
+(LLM ~55s+) го надминал лимитот на алатката; прекинот ја затворил HTTP
+конекцијата, што Langflow го пропагирал до Ollama. Ollama `server.log`:
+`"aborting completion request due to client closing the connection"`,
+`500 | 54.95s POST /api/chat`. Значи работата на моделот била фрлена, не
+само одговорот изгубен. **Решение:** fire-and-forget XHR (`x.onload`
+запишува во `window.__rN`, без `await`), чекање преку background Bash
+`until`-loop врз Langflow логот, па засебно читање на `window.__rN`.
+Импликација за идниот Langflow test-harness: читањето на build events
+не смее да има клиентски timeout покус од најдолгиот LLM чекор.
+
+**Gotcha 2 - stale browser tab тивко ги брише нодовите додадени преку
+API.** По истек на auto-login сесијата (API враќал `403 No
+authentication credentials provided`), `location.reload()` ја обновил
+сесијата, но при вчитувањето tab-от ја запишал својата стара
+in-memory состојба (пред чекор 5, кој бил додаден само преку PATCH, без
+reload меѓу нив) назад во backend-от. Сите 6 planner нодови и нивните
+конекции исчезнале (`updated_at` = моментот на reload); чекори 1-4
+останале неповредени. Истиот client-autosave механизам како во Наод
+#30, овој пат со загуба на цели нодови, не само една конекција.
+**Правило:** по секој PATCH преку API, reload на tab-от ВЕДНАШ и
+потврда на `nodes`/`edges` бројот пред каква било UI интеракција или
+следен PATCH. Чекор 5 е изграден одново со тоа правило и
+преживеал reload (25/20).
+
+**Методолошка забелешка:** чекор 5 е изграден со клонирање на цели
+работни нодови (`Operations-fence1`, `ParseJSONData-fix1`,
+`APIRequest-val2step`, итн.) наместо од сирова `/api/v1/all` шема. Со тоа
+автоматски се наследуваат `selected`, `advanced: false`, моделот и
+операцијата (Наоди #30, #35, #38), без повторување на четирите gotcha-и
+рачно. Препорачан начин за преостанатите чекори.
+
+## 40. Чекор 6 (dry_run) - едноставен, без LLM/fence-мост, но со нов резултатен формат (`simulation_ok` наместо `passed`)
+
+**Клучна разлика од чекори 1-5:** dry_run НЕ оди преку `guardrail_api`
+(:9100) - тој е директен POST кон `mock_firewall` (:9000)
+`/rules/dry-run`, кое прима сурово правило (`source_subnet, dest_subnet,
+dest_port, protocol`) и враќа `{"simulation_ok": true, "would_create":
+{...}}`. Нема `{"result": {"passed": ...}}` обвивка - If-Else Match Text
+мора да биде `'simulation_ok': True`, не `'passed': True` користено во
+чекори 1-5. Потврдено директно преку `curl` пред градба.
+
+**Синџир (3 нода, клонирани од `netbox3` образецот):** `API Request
+(статичен Body = истото фиксно правило) -> Type Convert -> If-Else`.
+Без Language Model - идентична логика како Наод #37 (netbox_check),
+бидејќи и двата чекора немаат LLM компонента во LangGraph/n8n
+верзиите.
+
+**Резултат:** `simulation_ok: true`, True гранка `{'source': '...:9000/
+rules/dry-run', ..., 'result': {'simulation_ok': True, 'would_create':
+{...}}}`, False празна, 0 грешки.
+
+**Двојна потврда:**
+1. По PATCH -> веднаш `location.reload()` -> `backend nodes/edges`
+   (28/22) наспроти `document.querySelectorAll('.react-flow__edge')`
+   (прво 0 - DOM сè уште не дорендериран веднаш по reload, потоа 22 по
+   кратко чекање) - точно совпаѓање, ништо од чекори 1-5 не е засегнато.
+2. `/api/v1/build` (fire-and-forget XHR, без блокирачко чекање - истиот
+   пристап од Наод #39) - 0 грешки, True гранка со точен `simulation_ok`
+   резултат.
+
+**Времетраење:** build завршил за <5s (нема LLM повик) - за разлика од
+чекори 1/2/4/5 (секој 10-90s+ поради Ollama). Потврдува дека
+fire-and-forget пристапот е потребен само кога LLM е вклучен во
+синџирот - за чисто-структурни чекори (netbox_check, dry_run),
+синхроно чекање со кус timeout е доволно.
+
+## 41. Истражување ПРЕД градба на чекор 7 (human_approval): дали Langflow има нативна pause-and-wait/human-in-the-loop семантика, и на кое ниво (компонента/API/UI зрелост)
+
+**Прашање:** LangGraph има `interrupt_before` + checkpointer (нативно
+дизајниран за пауза-и-продолжи). n8n има Wait node + webhook resume
+(workaround, не нативен графски примитив). Пред да се гради чекор 7
+(human_approval), потребно е да се утврди во која категорија спаѓа
+Langflow - без да се претпостави архитектура пред тестирање.
+
+**Истражувачки чекори:**
+1. `/api/v1/all` component catalog претрага за HITL-релевантни компоненти
+   -> само една: `flow_controls.HumanInput` (non-legacy, активно
+   одржувана, не legacy stub).
+2. Читање на целосниот source code од `template.code.value` на
+   HumanInput компонентата.
+3. `/openapi.json` претрага за resume/pause/suspend/human/workflow
+   патишта.
+4. GitHub issues/discussions претрага (langflow-ai/langflow) за "human
+   in the loop"/"pause execution".
+
+**Наод А - компонентата навистина паузира graph execution:**
+`HumanInput.build()` повикува `self.graph.request_pause(reason=
+"human_input_required", data=self._pause_request())` - ова е повик кон
+самиот graph runtime, не UI-само поле. На resume, компонентата чита
+`self.graph.human_input_decisions[request_id]` (`request_id` формат
+`f"{self._id}:{run_id}"`) и рутира на соодветна грана преку
+`self.stop(f"branch_{action_id}")` на сите останати гранки. Поддржува
+конфигурabilen `timeout` (DurationInput, default 3 дена; `0` = чекај
+бесконечно) и `enable_fallback` bool. Кодот референцира интерен тикет
+**LE-1449** и содржи експлицитен коментар: "The run stays paused until a
+response arrives or the server's suspended-run deadline expires it." -
+ова е недвосмислен доказ за вистинска graph-level пауза, аналогна на
+LangGraph-овиот `interrupt_before`, НЕ само chat-стил UI интеракција во
+рамки на едно синхроно извршување.
+
+**Наод Б - постои посветен API слој за ова, одделен од стандардниот build API:**
+`/api/v1/build/{flow_id}/flow` (кој се користеше за чекори 1-6) е ДЕЛ ОД
+СТАРИОТ v1 build систем и не е дизајниран за suspend/resume циклус.
+Постои посебен **v2 Workflows API**:
+- `POST /api/v2/workflows` (`WorkflowRunRequest` schema) - целосен run
+  endpoint со `mode: sync|stream|background`, `start_component_id`/
+  `stop_component_id`, `output_ids`, `globals`, `session_id`,
+  `idempotency_key`, `expose_graph_state`, `data` (live canvas override).
+- `POST /api/v2/workflows/{job_id}/resume` (`WorkflowResumeRequest:
+  {request_id: str, decision: object|null}`) - официјален опис:
+  "Resume a suspended (human-in-the-loop) workflow with a decision."
+- `GET /api/v2/workflows/pending` - "Suspended HITL jobs for a flow plus
+  their pending request, for the Traces overlay."
+- `GET /api/v2/workflows/{job_id}/events`, `POST /api/v2/workflows/stop`.
+
+**Импликација за методологијата:** ова значи дека `/api/v1/build` (двојната
+потврда користена за чекори 1-6) НЕ Е соодветен тест-протокол за овој
+чекор - веројатно build API синхроно ја игнорира паузата или ја third
+третира како грешка/timeout наместо вистинско suspend. Потребен е
+ЦЕЛОСНО РАЗЛИЧЕН тест-протокол специфично за овој чекор: (1) старт преку
+`/api/v2/workflows`, (2) потврда на pending статус преку `GET
+/api/v2/workflows/pending`, (3) resume повик со decision, (4) потврда на
+соодветна гранка. Ова е тестирано и документирано подолу во посебен запис
+откако градбата на чекор 7 е завршена.
+
+**Наод В - GitHub issues покажуваат UI/UX јаз меѓу постоечкиот backend примитив и практичната употребливост во canvas builder-от:**
+И покрај тоа што HITL backend примитивот (Наод А+Б) веќе постои во
+codebase-от, заедницата активно бара UI поддршка:
+- Discussion #5221 ("HIL(human-in-the-loop) process support") - барање
+  за мулти chat-input и pause/resume UI, отворена дискусија.
+- Issue #6867 ("Human-in-the-Loop (HITL) Support") - бара
+  конфигурabilni intervention points, pausable execution, review UI -
+  формулирано како ЖЕЛБА, не потврда на постоечка можност.
+- Issue #8310 ("How to add human-in-the-loop like in LangGraph?") -
+  корисник директно прашува како да го постигне ова, знак дека
+  canvas-based UI патека не е очигледна/документирана дури и кога backend
+  примитивот постои.
+
+**Синтеза (важна за Discussion секцијата на трудот):** Ова е ТРЕТА,
+нијансирана категорија, различна од двете претпоставени крајности:
+- НЕ "нема нативна поддршка, треба надворешен workaround" (n8n-стил Wait
+  node философија).
+- НЕ "целосно зрело, UI-подржано, документирано" (LangGraph-стил преку
+  LangGraph Studio/CLI).
+- Туку: **нативен, архитектонски правилен backend примитив постои
+  (компонента + посветен v2 API), но UI/UX слојот и документацијата се
+  назад во однос на бекендот** - функцијата е технички достапна само преку
+  директни API повици, не преку стандардниот canvas build/run tooling
+  што работеше за чекори 1-6. Ова е самостоен наод за архитектонски
+  компромиси при споредба на трите платформи - "нативна поддршка" не е
+  бинарен атрибут, туку спектар од (примитив постои) до (UI-изложено и
+  документирано).
+
+**Извори:** [Discussion #5221](https://github.com/langflow-ai/langflow/discussions/5221),
+[Issue #6867](https://github.com/langflow-ai/langflow/issues/6867),
+[Issue #8310](https://github.com/langflow-ai/langflow/issues/8310).
+
+## 42. Градба и целосна потврда на чекор 7 (human_approval) преку v2 workflows API - конечен, работен образец + критичен методолошки предупредувачки наод за `/api/v1/build`
+
+**Конструкција (изолиран тест синџир):** `HumanInput` (нативна компонента,
+`decisions: ["Approve","Reject"]`, `prompt.value` = статичен текст што ги
+симулира `proposed_rule_summary`/`change_plan`/`rollback_plan` од чекор 5,
+исто како netbox_check/dry_run - без LLM во синџирот) -> два sink нода
+(`TextOutput-sinkApprove`, `TextOutput-sinkReject`), по еден за секоја
+grana (`branch_approve`, `branch_reject`). API-bypass конструкција (нов
+нод "од нула" преку `/api/v1/all` schema clone + genericNode wrapper),
+идентична постапка како во претходните чекори. `HumanInput`-овите
+`branch_approve`/`branch_reject` outputs веќе доаѓаат со `"selected":
+"Message"` поставено by default во schema-та (group_outputs:true, но
+секоја grana си има свој единствен тип) - НЕМА потреба од UI клик fix
+(за разлика од Type Convert - Наод #30).
+
+**КРИТИЧЕН наод - `/api/v1/build` ТИВКО ЈА ЗАОБИКОЛУВА паузата:**
+Тестирано прво (пред v2 патеката) со `/api/v1/build/{flow_id}/flow?
+start_component_id=HumanInput-approve7&stop_component_id=HumanInput-approve7`
+- build завршил за 18ms, `"valid": true`, БЕЗ никаква пауза/суспендирање.
+И `branch_approve` И `branch_reject` истовремено го добиле истиот
+`message` резултат во build-логот (двете рутирани "гранки" всушност само
+пресметале вредност, ниту една не била избрана/стопирана) - разлика е
+единствено во `"repr": "Skipped: no connected outputs"` (артефакт на тоа
+што ништо не било поврзано во тој изолиран тест, не вистинска
+route-одлука). **Импликација:** `/api/v1/build` (двојната потврда
+користена за чекори 1-6) НЕ СМЕЕ да се користи за верификација на чекори
+со `HumanInput` - build API едноставно го игнорира `request_pause()`
+повикот и продолжува синхроно низ сите гранки, што би дало лажно-позитивен
+резултат (изгледа "работи", но реалната pause/route семантика никогаш не
+се тестира). Секој иден HITL тест МОРА да користи `/api/v2/workflows`.
+
+**Конечен, работен тест-протокол преку v2 API (заменува build API + DOM
+двојна потврда за овој чекор специфично):**
+
+1. `POST /api/v2/workflows` со `{flow_id, mode:"background",
+   start_component_id:"HumanInput-approve7"}` (без `stop_component_id`
+   во првиот тест - со `stop_component_id` во вториот, видено подолу).
+   Враќа `{job_id, status:"queued"}`.
+2. `GET /api/v2/workflows?job_id=...` - статус транзиција
+   `queued -> in_progress -> suspended` (потврдено, не lažно "completed"
+   како кај изолираниот single-node тест без sink-ови - видено во
+   под-наод подолу).
+3. `GET /api/v2/workflows/pending?flow_id=...` - враќа целосен pending
+   запис: `request_id` (формат `"{node_id}:{job_id}"`), `prompt` (точниот
+   текст од `prompt.value`), `options` (`[{action_id, label}, ...]`),
+   `allowed_decisions`.
+4. `POST /api/v2/workflows/{job_id}/resume` со тело `{request_id,
+   decision: {"action_id": "approve"}}` - **важно:** `decision` МОРА да
+   биде dict/object (`{"action_id": "..."}`), не сурова стринг вредност
+   - прв обид со `decision: "approve"` вратил `422 dict_type` валидациска
+   грешка. Успешен одговор: `{"status": "resuming", "message": "Resume
+   accepted"}`.
+5. Полирање на `GET /api/v2/workflows?job_id=...` до `status:"completed"`,
+   потоа читање на `outputs` полето за да се потврди КОЈА grana реално се
+   извршила.
+
+**Резултати (двете патеки целосно тестирани, независни job-ови):**
+- **decision=approve** (`{"action_id":"approve"}`): финален `outputs`
+  содржи `TextOutput-sinkApprove` со `status:"completed"` и точниот
+  content; `TextOutput-sinkReject` **воопшто не се појавува** во outputs
+  речникот (не е "skipped" со празен резултат - целосно отсутен, што
+  значи дека тој под-граф никогаш не е ниту евалуиран).
+- **decision=reject** (`{"action_id":"reject"}`, нов независен job):
+  огледално спротивно - `TextOutput-sinkReject` `completed` со точен
+  content, `TextOutput-sinkApprove` целосно отсутен.
+- И двата резултати се совпаѓаат со `self.stop(f"branch_{action_id}")`
+  механизмот опишан во изворниот код (Наод #41) - потврдено емпириски,
+  не само преку читање код.
+
+**Под-наод А - изолиран single-node тест (без sink нодови) НЕ паузира воопшто:**
+Пред да се додадат sink-овите, ист `/api/v2/workflows` повик со
+`start_component_id=stop_component_id=HumanInput-approve7` (нодот
+целосно неповрзан) вратил директно `status:"completed"` (не
+"suspended"), `human_request: null`, `content: null`. Паузата очигледно
+бара барем еден реално поврзан downstream nod за да има смисла да се
+суспендира ("нема за кого да чека одлука" ако ништо не е поврзано).
+**Импликација за иден тестирачки протокол:** секој иден HITL тест мора да
+вклучи барем минимален downstream sink пред тестирање на pause/resume,
+инаку добива лажно "completed" резултат наместо вистинска пауза.
+
+**Под-наод Б - `stop_component_id` НЕ ја скопира извршувањето на v2
+workflows на очекуваниот начин (за разлика од `/api/v1/build`):**
+И во approve тестот (без `stop_component_id`) И во reject тестот (СО
+`stop_component_id="TextOutput-sinkReject"`), build-логот покажува дека
+се извршиле СИТЕ останати изолирани синџири на canvas-от (netbox_check,
+validator, policy_checker, planner - вклучувајќи ги нивните LLM повици),
+не само патеката од `HumanInput` до неговиот sink. Времетраењето по
+resume бил ~95-110s во двата случаи (наспроти <5s очекувано за само
+HumanInput+sink патеката), директно потврдено преку timestamps во логот
+(cache-expiry пораки за секој неповрзан нод + вистински LLM резултати за
+planner/policy_checker во логот, ВО ТЕКОТ на "нашиот" job). **Импликација:**
+`start_component_id`/`stop_component_id` во v2 API очигледно се однесуваат
+поинаку од истоимените параметри во v1 build API (кои чисто ги
+скопираа партиелните извршувања во чекори 1-6) - можеби v2 ги игнорира
+целосно за background/suspended јобови, или ги применува поинаку. Ова е
+важен методолошки предупредувачки наод за идно wiring на целосниот
+10-чекорен pipeline: ако сите изолирани тест-синџири останат на истиот
+flow при финалното поврзување, секој v2 workflow повик врз тој flow ќе ги
+изврши сите нив, не само релевантниот под-граф - веројатно ќе биде
+потребно или (а) отстранување на веќе-искористените изолирани тест-синџири
+пред финалното wiring, или (б) одделни flow_id за секој чекор/тест.
+
+**Инфраструктурен инцидент за време на тестирањето (документиран заради
+транспарентност, не влијае на самите наоди погоре):** По првиот approve
+тест, серверот (сите 3 услуги - mock_firewall:9000, guardrail_api:9100,
+Langflow:7860) бил прекинат при премин меѓу сесии. При рестарт, backend
+flow состојбата (31 nodes/24 edges, вклучувајќи ги `HumanInput` +
+двата sink-а) била целосно сочувана (SQLite-базирана, независна од
+процесот - ист принцип како n8n-овата база), потврдено преку чист GET по
+рестартот пред продолжување со reject тестот.
+
+### Дополнение: интеграција на HumanInput со реален "apply" чекор (замена на placeholder sink-ови)
+
+По целосната потврда на pause/resume механизмот (двете правци, approve и
+reject), привремените `TextOutput-sinkApprove`/`TextOutput-sinkReject`
+беа отстранети и заменети со **реална** продолжителна патека, за да
+HumanInput компонентата да го гейтира вистински `apply` повикот, а не
+само да покажува текст:
+
+- **Approve патека:** `HumanInput.branch_approve` -> `TypeConverterComponent-apply7trigger`
+  (клон на веќе-работечки Type Convert нод со `data_output` веќе
+  `"selected": "JSON"` - искористен наодот дека клонирање наследува
+  "selected" без потреба од UI клик, Наод #38/#30) -> `APIRequest-apply7.headers`
+  (полето `headers` е Data/JSON-compatible, безопасно за реален
+  функционален ефект - примениот Message од HumanInput едноставно се
+  засолнува како дополнителен debug header, не го попречува вистинскиот
+  URL/Body). Ова е ЕДИНСТВЕНИОТ безбеден начин пронајден да се воспостави
+  вистинска graph-level зависност (HumanInput -> apply повик) без да се
+  контаминира `url_input`/`body` на API Request нодот со непожелна
+  Message содржина (обидите директно во `url_input` или `curl_input` би
+  ја замениле вистинската URL/тело вредност со човечко-читливиот prompt
+  текст - несоодветно).
+- `APIRequest-apply7` (POST кон `http://127.0.0.1:9000/rules/apply`,
+  статичен Body - истото правило од dry_run6) -> `TypeConverterComponent-apply7`
+  -> `ConditionalRouter-apply7` (`match_text: "'applied': True"`,
+  `contains`) - клонирана истата 3-нодна dry_run6 патека.
+- **Reject патека:** `HumanInput.branch_reject` -> `TextOutput-rejected7`
+  (директно, Message-compatible, терминален - НЕМА повик кон apply,
+  точен паралел со LangGraph/n8n `rejected_at_human_approval` /
+  `route_after_check "stop"->END` семантиката - одбивањето едноставно ја
+  запира патеката, не проследува кон ниту еден следен реален чекор).
+
+**Целосна E2E потврда преку `/api/v2/workflows` (по wiring):**
+- **Approve:** `POST /api/v2/workflows` (`start_component_id:
+  "HumanInput-approve7"`, без `stop_component_id` - видено подолу зошто)
+  -> suspend -> `resume` со `decision:{"action_id":"approve"}` ->
+  build-events потврдуваат: `HumanInput-approve7`
+  `inactivated_vertices: ["TextOutput-rejected7"]` (експлицитно
+  деактивирана reject-гранката), `APIRequest-apply7` реално го повикал
+  `http://127.0.0.1:9000/rules/apply` (`status_code: 200`),
+  `ConditionalRouter-apply7` резултат во `true_result`:
+  `{'applied': True, 'rule_id': '8b2e0d72-...'}`, `false_result` празен.
+  **Независно потврдено и надвор од Langflow** - `mock_firewall.log`
+  покажува реален `POST /rules/apply -> 200 OK` во моментот на resume,
+  доказ дека ефектот е стварен, не само внатрешна Langflow симулација.
+- **Reject:** ист процес, `decision:{"action_id":"reject"}` -> outputs
+  содржи `TextOutput-rejected7` (`completed`, точен content), но
+  `APIRequest-apply7` **воопшто не се појавува** во outputs (никогаш не
+  е активиран). **Независно потврдено** - `mock_firewall.log` останал
+  непроменет (`wc -l` идентичен пред/по resume) - НЕМА нов `/rules/apply`
+  повик, конкретен доказ дека одбивањето реално го спречува
+  извршувањето на apply, не само козметички го игнорира резултатот.
+
+**Дополнителна потврда на Под-наод Б (`stop_component_id` неисправно
+скопирање) откриена при wiring:** По додавањето на `headers`-зависноста,
+прв обид со `stop_component_id: "ConditionalRouter-apply7"` резултирал во
+**лажен "completed" статус БЕЗ пауза воопшто** (`outputs: {}`,
+`human_request: null`) - истата патека што претходно (пред wiring, само
+со stop_component_id=HumanInput-approve7 самиот на себе) исто така
+прескокнала паузата. Отстранувањето на `stop_component_id` (само
+`start_component_id`) веднаш ја вратило исправната `suspended`
+семантика. **Заклучок за конечниот тест-протокол:** за HITL чекори во
+Langflow v2 API, `stop_component_id` НЕ смее да се користи заедно со
+`start_component_id` кога патеката минува низ `HumanInput` - секогаш
+само `start_component_id`, без разлика на подолгото времетраење
+(~90-150s поради извршување на целиот остаток на canvas-от, документирано
+во Под-наод Б погоре).
+
+**Финална состојба на flow-от:** 34 nodes / 27 edges (по замената на
+2-та sink-а со 5-те нови нода: `APIRequest-apply7`,
+`TypeConverterComponent-apply7`, `ConditionalRouter-apply7`,
+`TypeConverterComponent-apply7trigger`, `TextOutput-rejected7`),
+потврдено backend/DOM совпаѓање по секој PATCH (согласно
+reload+verify правилото). Чекор 7 (human_approval) е целосно завршен,
+двонасочно тестиран, и реално интегриран со почетокот на чекор 8
+(apply) во истиот изолиран тест-синџир на canvas-от - следен чекор е
+изградба на целосен чекор 8 (со сопствена guardrail проверка преку
+verify_result/check_verifier) како одделна задача.
+
+**Двојна потврда:** build backend-count reload+verify правилото е
+применето по секој PATCH (31/24 совпаѓање backend/DOM по секое
+додавање); v2 workflow резултатите (outputs речник со `status:
+"completed"` и точен `content` по grana) служат како замена за build-API
+верификацијата специфично за овој чекор, согласно наодот погоре дека
+`/api/v1/build` не е валиден тест-протокол за HITL чекори.
+
+## 43. Чекор 9 (verify) + чекор 10 (conditional rollback) - градба, двонасочна потврда, и ТРИ реални бага откриени и поправени во текот на тестирањето
+
+**Претходна проверка - дали чекор 8 (apply) бара дополнителна guardrail проверка:**
+Прегледан `guardrails/` пакетот - **НЕМА** `check_apply.py` (само 6 guardrail
+датотеки постојат: intent_parser, validator, netbox, policy, planner,
+verifier). Потврдено и во `graph_v1.py::apply_node` - таму НЕ се повикува
+никаква `check_*` guardrail функција, само структурна проверка
+(`response.ok and result.get("applied", False)`). **Заклучок:** веќе
+изградениот `APIRequest-apply7` -> `TypeConverterComponent-apply7` ->
+`ConditionalRouter-apply7` (match `'applied': True`) од чекор 7
+интеграцијата **целосно** ги задоволува барањата на чекор 8 - нема
+дуплирање на работа, директно продолжено со чекор 9.
+
+**Градба на чекор 9 (verify):** синџир од 7 нови нода, продолжувајќи од
+`ConditionalRouter-apply7.true_result`:
+1. `ParseJSONData-verify9url` - jq query `"http://127.0.0.1:9000/rules/" + .result.rule_id`
+   (динамички ја гради verify URL-та од rule_id-то вратено од apply7,
+   а НЕ статична вредност - прв случај во оваа изградба каде реален
+   runtime резултат од претходен чекор се препраќа во следен, наместо
+   изолиран статичен тест).
+2. `TypeConverterComponent-verify9url` (JSON->Message, клонирано од нод
+   со веќе `selected:"Message"` - без потреба од UI клик).
+3. `APIRequest-verify9get` (GET, `url_input` презапишан преку edge).
+4. `ParseJSONData-verify9wrap` - jq wrap `{verify_result: .result,
+   expected_rule: {source_subnet, dest_subnet, dest_port, protocol}}`
+   (истиот "wrap" образец како policy4 - Наод #38).
+5. `APIRequest-verify9check` (POST кон `guardrail_api:9100/check/verifier`).
+6. `TypeConverterComponent-verify9` (JSON->Message).
+7. `ConditionalRouter-verify9` (match `'passed': True`, contains).
+
+**Градба на чекор 10 (rollback), условно на verify9's False гранка:**
+- `ConditionalRouter-verify9.false_result` (веднаш преправено да ја носи
+  verify URL-та преку `false_case_message` - видено подолу зошто) ->
+  `APIRequest-rollback10` (DELETE) -> `TypeConverterComponent-rollback10`
+  -> `ConditionalRouter-rollback10` (match `'rolled_back': True`).
+- True гранка на verify9 (match) е терминална - успешен крај, нема rollback
+  (аналогно на LangGraph `route_after_check` кое rollback_node го извршува
+  САМО условно, не безусловно - Наод потврден и во `graph_v1.py`
+  коментарот "се извршува САМО ако verify врати негативен резултат").
+
+### Баг #1 - APIRequest-от го обвиткува вистинскиот одговор под `.result` клуч (истата "envelope" структура забележана и во Наод #42 за apply7)
+
+Прв тест (decision=approve, очекувано match) неочекувано завршил во
+**rollback** гранката. Дијагноза преку build-events открила:
+`"schema_error: 'exists' is a required property"` - `ParseJSONData-verify9wrap`
+првично користел `{verify_result: ., ...}` (`.` = целиот APIRequest
+response envelope `{source, status_code, response_headers, result}`),
+наместо `{verify_result: .result, ...}` (само вистинската `{"exists":...,
+"rule":...}` содржина вратена од `/rules/{id}` endpoint-от). **Поправка:**
+jq query сменет на `.result` наместо `.`. **Импликација:** секој иден
+чекор што парсира одговор од `APIRequest` (JSON output type) мора да
+внимава дека вистинската endpoint содржина е вгнездена под `.result` -
+директен `.` секогаш го зема целиот HTTP-метаподатоци envelope, не
+"голата" содржина.
+
+### Баг #2 - двоен (AND) dependency на еден нод не се однесува како вистинска condition-gate; мора да е единствена зависност целосно во рамки на条 гранката
+
+По поправка #1, verify9 коректно проценил `passed: True`, ПОТВРДЕНО преку
+build-events (`TypeConverterComponent-verify9` резултат содржел
+`'passed': True, 'errors': []`), НО `APIRequest-rollback10` (DELETE)
+**сепак се извршил**, потврдено и надвор од Langflow преку
+`mock_firewall.log` (реален DELETE повик проследен веднаш по GET, иако
+се очекувал само GET). **Корен на проблемот:** `APIRequest-rollback10`
+имал ДВЕ влезни рабови - (а) `headers` <- условно гejtирана преку
+`TypeConverterComponent-rollback10trigger` <- `ConditionalRouter-verify9.false_result`
+(треба да е "стопирана" на match), И (б) `url_input` <- директно од
+`TypeConverterComponent-verify9url.message_output` (БЕЗУСЛОВНО активен
+извор, пресметан пред routing одлуката). Langflow-related vertex sorting
+очигледно ја извршува целата low-level граф-подготовка штом СИТЕ влезни
+рабови се "разрешени" (дури и кога еден потекнува од "inactivated"
+гранка со празна порака) - НЕ спречува извршување само затоа што ЕДЕН
+од повеќе влезови доаѓа од стопирана гранка. **Поправка:** искористено
+`ConditionalRouter`-овото сопствено `false_case_message` поле
+(`MessageInput`, `advanced:true` по default - треба рачно `advanced:false`)
+- ја пренесува verify URL-та (`TypeConverterComponent-verify9url.message_output`)
+директно ВНАТРЕ во false-гранката, а потоа `ConditionalRouter-verify9.false_result`
+станува ЕДИНСТВЕН влезен раб на `APIRequest-rollback10.url_input`
+(отстранет е separatниот `TypeConverterComponent-rollback10trigger` нод
+целосно - веќе непотребен). **Општа лекција за идни conditional-gated
+чекори:** секој нод чие извршување треба да зависи ЕДИНСТВЕНО од тоа
+која гранка на `ConditionalRouter`/`HumanInput` е избрана, мора да прима
+СИТЕ свои влезни податоци (не само еден "trigger" раб меѓу повеќе) преку
+рабови што потекнуваат исклучиво од таа иста гранка - мешање на
+"безусловен" и "условен" влез на ист таргет нод не гарантира gating,
+дури и ако едниот влез е "стопиран".
+
+### Баг #3 (инфраструктурен, не логички) - reload/navigate на browser табот повторно предизвикува тивко бришење раб (реinstance на Наод #35), но САМО за конкретниот `TypeConverterComponent-apply7trigger` -> `APIRequest-apply7.headers` раб, и репродуцирано на СЕКОЈ PATCH циклус
+
+По секој PATCH проследен со `navigate()` reload на табот (стандардното
+"reload+verify" правило), точно овој единствен раб (востановен уште во
+Наод #42 интеграцијата) континуирано исчезнувал - потврдено 3 пати
+последователно во текот на чекор 9/10 тестирањето. И `headers.advanced`
+(`false`) И `TypeConverterComponent-apply7trigger`-овиот `selected`
+(`"JSON"`) останувале коректно зачувани - НЕ е истиот механизам како
+Наод #30/#35 (кои се однесуваат на "selected"/"advanced" вредности во
+самиот template). **Дијагностички тест:** иста PATCH операција проверена
+преку ЧИСТ `GET` (без `navigate()`/reload на табот) веднаш по PATCH
+покажала точен, целосен резултат (38/38 рабови) - раб не недостасувал.
+Дури по СЛЕДЕН `navigate()` reload на истиот таб, работ исчезнувал.
+**Заклучок:** конкретно ЗА ОВОј раб, browser табот носи застарена
+in-memory React Flow состојба (веројатно бидејќи табот never "видел"
+genuine UI drag/click за токму оваа конкретна врска, за разлика од
+рабовите додадени порано во сесијата пред табот последен пат да биде
+активно користен за UI интеракции), и клиентската autosave логика при
+секој reload ја презапишува server состојбата со таа застарена верзија,
+бришејќи го работ. **Работна поправка применета:** по секој PATCH врз
+овој дел од flow-от, верификацијата се прави ИСКЛУЧИВО преку чист `GET`
+(XHR, без `navigate()`), а работ се повторно додава преку нов PATCH секој
+пат кога недостасува пред извршување на реален тест. **Ажурирано
+методолошко правило за идна работа:** "reload+verify" правилото (кое
+некогаш го СПАСИ чекор 5 сценариото) сепак може САМО ПО СЕБЕ да предизвика
+губење на податоци кога табот е "стар" во однос на неодамнешни PATCH
+промени - најбезбедно е да се потврдува преку чист `GET` секогаш кога е
+можно, а `navigate()` reload да се резервира само кога е СТРОГО потребно
+(на пр. за да се превземе нов auth token по session expiry).
+
+**Целосна двонасочна E2E потврда (по сите 3 поправки):**
+- **Success патека** (`expected_rule.dest_port: 443`, се совпаѓа со
+  реалниот applied rule): `mock_firewall.log` расте точно за +1 (само
+  `GET /rules/{id}`), НЕМА `DELETE`. `ConditionalRouter-rollback10`/
+  `APIRequest-rollback10` **отсутни** од outputs - никогаш не се
+  активираат.
+- **Rollback патека** (форсиран mismatch - привремено `expected_rule.dest_port`
+  сменет на `9999`, аналогно на n8n-техниката за форсирање на неуспешен
+  тест): `mock_firewall.log` расте за +2 (`GET` па `DELETE` кон ИСТИОТ
+  `rule_id`), build-events потврдуваат `ConditionalRouter-rollback10`
+  `true_result` содржи `{'rolled_back': True}`. По тестот, `dest_port`
+  вратен на `443`, потврдено преку чист GET (44 nodes / 38 edges,
+  идентично со пред-тестовата состојба).
+
+**Финална состојба:** 44 nodes / 38 edges, сите 10 чекори од Табела 1
+изградени во Langflow, секој независно верифициран (build API за
+чекори 1-6, `/api/v2/workflows` suspend/resume за чекор 7, real-effect
+проверки преку `mock_firewall.log` за чекори 7-10). Ова е паралелна
+целина со веќе завршените LangGraph и n8n имплементации - следен чекор
+е споредбена анализа (Discussion секција) на трите платформи, а не
+дополнителна градба (сите изолирани тест-синџири сепак остануваат
+одделни на canvas-от - целосно end-to-end визуелно поврзување на сите
+10 чекори во ЕДИНСТВЕН continuous pipeline е одделна, не-стартувана
+задача, ако е потребна за трудот).
