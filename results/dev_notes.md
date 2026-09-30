@@ -2278,3 +2278,155 @@ genuine UI drag/click за токму оваа конкретна врска, з
 одделни на canvas-от - целосно end-to-end визуелно поврзување на сите
 10 чекори во ЕДИНСТВЕН continuous pipeline е одделна, не-стартувана
 задача, ако е потребна за трудот).
+
+## 46. Статистички test-harness за n8n и Langflow (10x-репетиции) - механизми, gotcha-и, и скоп одлуки
+
+**n8n harness (`test-harness/run_experiment_n8n.py`):** активира workflow
+`CwrkhftDrYNgl08c` преку нов **паралелен Webhook trigger** (`TELFOR Test
+Webhook`, POST `/webhook/telfor-test-run`), не browser automation, не
+Manual Trigger CLI (`n8n execute --id` не работи паралелно со веќе-active
+сервер - конфликт на Task Broker портата 5679). Auth преку n8n Public API
+key (Settings > n8n API, зачуван во `.env` како `N8N_API_KEY`).
+
+**Два реални бага откриени и поправени при градбата:**
+1. **Mojibake преку shell curl аргументи**: рачно curl тестирање со
+   кирилица во `-d` директно во команда предизвикало корупција на
+   текстот пред да стигне до n8n (LLM добил гарбиран влез, halucinирал
+   на кинески). **Поправка:** секогаш `requests.post(json=...)` (Python),
+   никогаш raw curl со кирилица во shell аргумент.
+2. **Погрешен n8n expression синтакс за инјектирање на raw_request**:
+   првиот обид го сменил "Basic LLM Chain"-овото `text` поле во ЦЕЛОСЕН
+   JS израз (`="literal" + (тернарен израз)`) - LangChain nodes НЕ го
+   евалуираат целото поле како еден JS израз (за разлика од обични n8n
+   nodes), туку бараат вградени `{{ }}` mustache-изрази во рамки на
+   статичен текст. Резултат: LLM буквално го примил JS кодот како текст
+   (потврдено преку execution `inputOverride` - Ollama добил
+   `"Барање: " + ($json.body && ...)` како буквален стринг).
+   **Поправка:** `="статичен текст" + "{{ mustache израз }}"`.
+3. **Wait node resume field key НЕ е "decision"** (тоа е само
+   `fieldLabel`, display текст) - вистинскиот submission key е
+   `field-0` (потврдено преку живо DOM инспектирање на формата,
+   `select[name="field-0"]`). POST до `resumeFormUrl`-от (наоден во
+   `run_data["Wait"][0]["metadata"]["resumeFormUrl"]` преку
+   `/api/v1/executions/{id}?includeData=true`) со
+   `files={"field-0": (None, "approve")}` multipart/form-data - успешно
+   потврдено (`{"status":200}`, потоа реален `/rules/apply` + verify GET
+   повик во mock_firewall.log, execution status "success").
+
+**Инфраструктурен наод (не багa, туку опсервација):** во текот на
+рачното mechanism-verification тестирање, "guaranteed_safe" test intent-от
+(намерно дизајниран statistички да минува low-risk) добил 3 последователни
+LLM халуцинации (policy_checker лажно тврдел "high risk"; planner вратил
+`rollback_plan` како структуриран list наместо потребен string) пред
+конечно да стигне до Wait node-от. Ова се ЛЕГИТИМНИ guardrail catches
+(потврдени преку `check_policy.py`/schema validation дијагностика во
+error пораките), не бag во harness-от - токму ваквата стохастичност
+статистички ја мери 10x-репетицискиот harness.
+
+**Langflow harness (`test-harness/run_experiment_langflow.py`) - СКОП ОДЛУКА:**
+Пред градба, инвентарот покажа дека целосно поврзување на чекори 1-6
+(изолирани тест-синџири) со веќе-поврзаните чекори 7-10 (Наод #42/43) би
+барало замена на 8 засебни зацврстени вредности (validator/policy/planner
+LLM prompt-ови преку intent-JSON reformat, policy/verify wrap-query
+rebuild преку jq string-builder логика, HumanInput prompt rebuild) = ~6
+нетривијални работни блока, надминувајќи разумен временски буџет пред
+TELFOR рокот (4 октомври). **Експлицитна корисничка одлука:** Langflow
+harness-от го мери САМО инфраструктурната стабилност на чекори 7-10
+(HITL pause/resume + apply/verify/conditional rollback преку
+`/api/v2/workflows`), НЕ LLM/guardrail стабилноста низ целиот pipeline
+(тоа е веќе мерено за LangGraph/n8n). Chapters 7-10 немаат LLM повик
+воопшто - HumanInput promptot е статичен текст, apply/verify/rollback се
+чисто структурни HTTP + детерминистичка `check_verifier.py` проверка -
+значи нема очекувана model-стохастичност; целта е потврда дека Langflow
+v2 suspend/resume инфраструктурата е доследно стабилна низ повторувања.
+CSV содржи единствен `intent_id="human_approval_gate_static"` (не 4-те
+LangGraph/n8n test intents - тие не се применливи тука).
+
+**Langflow auth:** API key преку Settings > API Keys (`x-api-key` header,
+НЕ `X-N8N-API-KEY` стилот од n8n), зачуван во `.env` како
+`LANGFLOW_API_KEY`. За разлика од n8n-овиот clipboard truncation проблем
+(Наод #20-style sandbox блокирање), Langflow-овиот one-time-reveal дијалог
+го покажува целиот клуч директно во `<input>` DOM елемент (не
+truncated), читливо преку `document.querySelectorAll('input')` без
+clipboard workaround.
+
+**Наод #46-a - `outputs` речникот од `/api/v2/workflows?job_id=...` е
+непоуздан индикатор за outcome detection**: првиот обид за detection
+логика (проверка дали `"ConditionalRouter-apply7"`/`"ConditionalRouter-
+verify9"` клучевите постојат во `outputs`) дал `outcome: "unknown"` и на
+успешен run (95s, реален `/rules/apply`+`GET` повик потврден во
+mock_firewall.log) - `outputs` листата на терминални nodes не е
+доследна од run до run (истата нестабилност веќе делумно забележана во
+Наод #42). **Поправка:** detection логиката е целосно префрлена на
+`mock_firewall.log`-от (независна, надворешна ground truth) - брои нови
+редови по job (пред/по), проверува присуство на `POST /rules/apply`,
+`GET /rules/{id}`, `DELETE /rules/{id}` за да го одреди
+`ok`/`rejected_at_human_approval`/`verification_failed_rolled_back`.
+
+**Двата harness-а стартувани во позадина** (n8n: 4 intents × 10 = 40
+повторувања; Langflow: 10 повторувања), резултатите се append-уваат во
+истиот `results/experiment_results.csv` (platform колона: `n8n`/
+`langflow`, ист CSV формат како LangGraph-овиот `run_experiment.py`).
+
+## 47. n8n policy_violating 8/10 ok — потврден реален архитектурски gap, НЕ harness bug
+
+**Контекст:** Споредбата на CSV резултатите покажа груба несогласност:
+`policy_violating` intent (10.0.0.0/8 → 172.16.5.0/24, порт 22) добил
+10/10 одбивање во LangGraph (8× `rejected_at_policy_checker_denied`, 2×
+`rejected_at_validator_invalid`) наспроти 8/10 `ok` во n8n (само 2×
+`rejected_at_planner`, нула `rejected_at_policy_checker`).
+
+**Корен-причина (потврдена преку код инспекција, не хипотеза):**
+
+LangGraph `guardrail_policy_node` (graph_v1.py:130-135) прави **два
+независни проверувања**:
+```python
+guardrail_ok = result["passed"]          # (1) Дали guardrail го валидира output-от
+business_ok = state["policy_result"]     #     (schema/consistency/ground-truth OK?)
+                .get("policy_pass", False)  # (2) Дали LLM-от одлучил да дозволи?
+if not guardrail_ok:   → rejected_at_policy_checker_guardrail
+elif not business_ok:  → rejected_at_policy_checker_denied
+```
+
+n8n `If3` проверува **само (1)** (`$json.passed` од `/check/policy`
+guardrail_api HTTP повикот). Нема еквивалент на проверка (2) —
+`policy_result.policy_pass` полето никаде не се проверува во n8n синџирот.
+
+**Механизам за policy_violating input:**
+- LLM правилно враќа `{"policy_pass": false, "violations": [...], "risk_level": "high"}`
+- Guardrail API `/check/policy`: output е интерно конзистентен и ground-truth
+  потврдена (risk_level="high" ↔ /8 subnet + port 22 → no errors) → `passed: true`
+- If3: `passed == true` → True branch → pipeline ПРОДОЛЖУВА наместо да одбие
+
+Резултат: n8n пропушта секој `policy_pass: false` случај каде LLM сеуште
+произведува конзистентен, правилно-форматиран JSON. Само ако LLM произведе
+INCONSISTENTEN output (policy_pass:true + risk_level:high, или погрешен
+risk_level наспроти ground truth) guardrail_api ќе врати `passed:false` и
+If3 ќе го одбие.
+
+**Зошто 2/10 ипак биле одбиени (при planner, не policy_checker):** кај тие
+2 повторувања LLM продолжил до planner и таму произведел output кој го
+одбил planner guardrail-от — случајна downstream неуспешност, не policy
+логика. Нема нула случаи на одбивање кај policy_checker во n8n за овој intent.
+
+**Дефинитивна класификација: ова е РЕАЛЕН НАОД, не bug во harness-от.**
+CSV резултатите се валидни. Наодот е самостоен и значаен за трудот:
+
+*Импликација за Discussion секција:* n8n-овата HTTP-abstraction архитектура
+(LLM Chain → HTTP Request → If node) бара инженерот **експлицитно** да го
+пренасочи LLM-овото деловно одлучување (policy_pass полето) кон
+соодветен If чвор - само ако тој се сеќа. LangGraph-овата нативна Python
+интеграција (state dict, директен `state["policy_result"].get(...)`) ги
+прави двата слоји (guardrail валидација + деловна одлука) природно видливи
+и тешко да се пропуштат. Ова претставува конкретен пример на тоа дека
+LLM-ориентираните low-code/HTTP-based orchstratori (n8n) можат да пропуштат
+корисничко-дефинирани семантички услови кои Python-базираните рамки
+(LangGraph) ги прфаќаат структурно.
+
+**Поправка за n8n (не применета - TELFOR рок 4 октомври, резултатите се веќе
+валидни за компаративната анализа):** If3 би требало да проверува И
+`$json.passed` (guardrail) И `$('HTTP Request3').item.json.policy_result.policy_pass == false`
+(business decision), или edit fields node по Basic LLM Chain2 да ја извлече
+`policy_pass` вредноста и If3 да провери ОБАТА услови. Тоа е 2-3 дополнителни
+n8n нод промени - оставено ненаправено за TELFOR поради роков притисок,
+и документирано тука за методолошка транспарентност во трудот.

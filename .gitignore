@@ -3,3 +3,5 @@ langflow-poc/venv_langflow/
 __pycache__/
 *.pyc
 *.csv
+!results/experiment_results.csv
+.env

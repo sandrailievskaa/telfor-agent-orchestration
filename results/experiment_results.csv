@@ -1,0 +1,101 @@
+platform,intent_id,run,outcome,failed_at_step,guardrail_catches,duration_sec,model
+langgraph,simple,1,rejected_at_policy_checker_guardrail,policy_checker,1,41.04,qwen2.5:7b
+langgraph,simple,2,rejected_at_policy_checker_guardrail,policy_checker,1,30.97,qwen2.5:7b
+langgraph,simple,3,rejected_at_policy_checker_denied,policy_checker,0,34.84,qwen2.5:7b
+langgraph,simple,4,rejected_at_policy_checker_guardrail,policy_checker,1,628.08,qwen2.5:7b
+langgraph,simple,5,rejected_at_policy_checker_denied,policy_checker,0,37.2,qwen2.5:7b
+langgraph,simple,6,rejected_at_policy_checker_denied,policy_checker,0,31.79,qwen2.5:7b
+langgraph,simple,7,rejected_at_policy_checker_denied,policy_checker,0,31.1,qwen2.5:7b
+langgraph,simple,8,rejected_at_policy_checker_guardrail,policy_checker,1,33.39,qwen2.5:7b
+langgraph,simple,9,rejected_at_policy_checker_guardrail,policy_checker,1,30.98,qwen2.5:7b
+langgraph,simple,10,rejected_at_policy_checker_denied,policy_checker,0,34.48,qwen2.5:7b
+langgraph,edge_incomplete,1,rejected_at_intent_parser,intent_parser,1,7.59,qwen2.5:7b
+langgraph,edge_incomplete,2,rejected_at_intent_parser,intent_parser,1,6.44,qwen2.5:7b
+langgraph,edge_incomplete,3,rejected_at_intent_parser,intent_parser,1,5.08,qwen2.5:7b
+langgraph,edge_incomplete,4,rejected_at_intent_parser,intent_parser,1,5.03,qwen2.5:7b
+langgraph,edge_incomplete,5,rejected_at_intent_parser,intent_parser,1,5.15,qwen2.5:7b
+langgraph,edge_incomplete,6,rejected_at_intent_parser,intent_parser,1,6.61,qwen2.5:7b
+langgraph,edge_incomplete,7,rejected_at_intent_parser,intent_parser,1,6.62,qwen2.5:7b
+langgraph,edge_incomplete,8,rejected_at_intent_parser,intent_parser,1,5.71,qwen2.5:7b
+langgraph,edge_incomplete,9,rejected_at_intent_parser,intent_parser,1,6.53,qwen2.5:7b
+langgraph,edge_incomplete,10,rejected_at_intent_parser,intent_parser,1,5.2,qwen2.5:7b
+langgraph,policy_violating,1,rejected_at_policy_checker_denied,policy_checker,0,42.78,qwen2.5:7b
+langgraph,policy_violating,2,rejected_at_policy_checker_denied,policy_checker,0,24.76,qwen2.5:7b
+langgraph,policy_violating,3,rejected_at_policy_checker_denied,policy_checker,0,32.51,qwen2.5:7b
+langgraph,policy_violating,4,rejected_at_policy_checker_denied,policy_checker,0,22.43,qwen2.5:7b
+langgraph,policy_violating,5,rejected_at_validator_invalid,validator,0,16.15,qwen2.5:7b
+langgraph,policy_violating,6,rejected_at_validator_invalid,validator,0,35.13,qwen2.5:7b
+langgraph,policy_violating,7,rejected_at_policy_checker_denied,policy_checker,0,25.51,qwen2.5:7b
+langgraph,policy_violating,8,rejected_at_policy_checker_denied,policy_checker,0,19.85,qwen2.5:7b
+langgraph,policy_violating,9,rejected_at_policy_checker_denied,policy_checker,0,48.57,qwen2.5:7b
+langgraph,policy_violating,10,rejected_at_policy_checker_denied,policy_checker,0,24.71,qwen2.5:7b
+langgraph,guaranteed_safe,1,rejected_at_policy_checker_denied,policy_checker,0,59.67,qwen2.5:7b
+langgraph,guaranteed_safe,2,rejected_at_policy_checker_denied,policy_checker,0,44.53,qwen2.5:7b
+langgraph,guaranteed_safe,3,rejected_at_policy_checker_guardrail,policy_checker,1,33.1,qwen2.5:7b
+langgraph,guaranteed_safe,4,rejected_at_policy_checker_denied,policy_checker,0,26.33,qwen2.5:7b
+langgraph,guaranteed_safe,5,rejected_at_policy_checker_guardrail,policy_checker,1,22.41,qwen2.5:7b
+langgraph,guaranteed_safe,6,rejected_at_policy_checker_guardrail,policy_checker,1,43.01,qwen2.5:7b
+langgraph,guaranteed_safe,7,rejected_at_policy_checker_denied,policy_checker,0,38.44,qwen2.5:7b
+langgraph,guaranteed_safe,8,rejected_at_policy_checker_denied,policy_checker,0,25.78,qwen2.5:7b
+langgraph,guaranteed_safe,9,rejected_at_policy_checker_denied,policy_checker,0,26.13,qwen2.5:7b
+langgraph,guaranteed_safe,10,rejected_at_policy_checker_denied,policy_checker,0,30.53,qwen2.5:7b
+langgraph_prompt_v2,guaranteed_safe,1,rejected_at_policy_checker_guardrail,policy_checker,1,26.36,qwen2.5:7b
+langgraph_prompt_v2,guaranteed_safe,2,rejected_at_policy_checker_denied,policy_checker,0,26.57,qwen2.5:7b
+langgraph_prompt_v2,guaranteed_safe,3,rejected_at_policy_checker_guardrail,policy_checker,1,24.75,qwen2.5:7b
+langgraph_prompt_v2,guaranteed_safe,4,rejected_at_planner,planner,1,135.99,qwen2.5:7b
+langgraph_prompt_v2,guaranteed_safe,5,rejected_at_policy_checker_guardrail,policy_checker,1,22.93,qwen2.5:7b
+langgraph_prompt_v2,guaranteed_safe,6,rejected_at_policy_checker_denied,policy_checker,0,25.59,qwen2.5:7b
+langgraph_prompt_v2,guaranteed_safe,7,rejected_at_policy_checker_denied,policy_checker,0,22.16,qwen2.5:7b
+langgraph_prompt_v2,guaranteed_safe,8,rejected_at_planner,planner,1,104.84,qwen2.5:7b
+langgraph_prompt_v2,guaranteed_safe,9,rejected_at_policy_checker_denied,policy_checker,0,28.5,qwen2.5:7b
+langgraph_prompt_v2,guaranteed_safe,10,rejected_at_policy_checker_guardrail,policy_checker,1,49.41,qwen2.5:7b
+langflow,human_approval_gate_static,1,ok,none,0,108.59,n/a (chapters 7-10 have no LLM call)
+n8n,simple,1,rejected_at_policy_checker,policy_checker,1,146.52,qwen2.5:7b
+langflow,human_approval_gate_static,2,ok,none,0,116.33,n/a (chapters 7-10 have no LLM call)
+langflow,human_approval_gate_static,3,ok,none,0,117.77,n/a (chapters 7-10 have no LLM call)
+n8n,simple,2,ok,none,0,339.1,qwen2.5:7b
+langflow,human_approval_gate_static,4,ok,none,0,240.01,n/a (chapters 7-10 have no LLM call)
+n8n,simple,3,rejected_at_policy_checker,policy_checker,1,136.71,qwen2.5:7b
+langflow,human_approval_gate_static,5,ok,none,0,130.93,n/a (chapters 7-10 have no LLM call)
+n8n,simple,4,error,"exception: HTTP Request3: The value in the ""JSON Body"" field is not valid JSON",0,151.77,qwen2.5:7b
+langflow,human_approval_gate_static,6,ok,none,0,148.08,n/a (chapters 7-10 have no LLM call)
+langflow,human_approval_gate_static,7,ok,none,0,140.96,n/a (chapters 7-10 have no LLM call)
+n8n,simple,5,rejected_at_policy_checker,policy_checker,1,237.6,qwen2.5:7b
+langflow,human_approval_gate_static,8,ok,none,0,180.33,n/a (chapters 7-10 have no LLM call)
+n8n,simple,6,ok,none,0,248.04,qwen2.5:7b
+langflow,human_approval_gate_static,9,ok,none,0,160.61,n/a (chapters 7-10 have no LLM call)
+langflow,human_approval_gate_static,10,ok,none,0,119.43,n/a (chapters 7-10 have no LLM call)
+n8n,simple,7,rejected_at_planner,planner,1,273.11,qwen2.5:7b
+n8n,simple,8,rejected_at_policy_checker,policy_checker,1,55.61,qwen2.5:7b
+n8n,simple,9,error,"exception: HTTP Request4: The value in the ""JSON Body"" field is not valid JSON",0,141.34,qwen2.5:7b
+n8n,simple,10,rejected_at_policy_checker,policy_checker,1,55.56,qwen2.5:7b
+n8n,edge_incomplete,1,rejected_at_intent_parser,intent_parser,1,5.12,qwen2.5:7b
+n8n,edge_incomplete,2,rejected_at_intent_parser,intent_parser,1,5.18,qwen2.5:7b
+n8n,edge_incomplete,3,rejected_at_intent_parser,intent_parser,1,5.16,qwen2.5:7b
+n8n,edge_incomplete,4,rejected_at_intent_parser,intent_parser,1,5.15,qwen2.5:7b
+n8n,edge_incomplete,5,rejected_at_intent_parser,intent_parser,1,5.15,qwen2.5:7b
+n8n,edge_incomplete,6,rejected_at_intent_parser,intent_parser,1,5.18,qwen2.5:7b
+n8n,edge_incomplete,7,rejected_at_intent_parser,intent_parser,1,5.14,qwen2.5:7b
+n8n,edge_incomplete,8,rejected_at_intent_parser,intent_parser,1,5.17,qwen2.5:7b
+n8n,edge_incomplete,9,rejected_at_intent_parser,intent_parser,1,5.16,qwen2.5:7b
+n8n,edge_incomplete,10,rejected_at_intent_parser,intent_parser,1,5.15,qwen2.5:7b
+n8n,policy_violating,1,ok,none,0,95.96,qwen2.5:7b
+n8n,policy_violating,2,ok,none,0,136.42,qwen2.5:7b
+n8n,policy_violating,3,ok,none,0,106.09,qwen2.5:7b
+n8n,policy_violating,4,rejected_at_planner,planner,1,141.45,qwen2.5:7b
+n8n,policy_violating,5,ok,none,0,96.05,qwen2.5:7b
+n8n,policy_violating,6,ok,none,0,106.17,qwen2.5:7b
+n8n,policy_violating,7,rejected_at_planner,planner,1,106.17,qwen2.5:7b
+n8n,policy_violating,8,ok,none,0,116.22,qwen2.5:7b
+n8n,policy_violating,9,ok,none,0,90.97,qwen2.5:7b
+n8n,policy_violating,10,ok,none,0,90.99,qwen2.5:7b
+n8n,guaranteed_safe,1,ok,none,0,126.27,qwen2.5:7b
+n8n,guaranteed_safe,2,ok,none,0,121.31,qwen2.5:7b
+n8n,guaranteed_safe,3,rejected_at_policy_checker,policy_checker,1,65.71,qwen2.5:7b
+n8n,guaranteed_safe,4,rejected_at_planner,planner,1,151.49,qwen2.5:7b
+n8n,guaranteed_safe,5,rejected_at_policy_checker,policy_checker,1,55.63,qwen2.5:7b
+n8n,guaranteed_safe,6,ok,none,0,146.69,qwen2.5:7b
+n8n,guaranteed_safe,7,rejected_at_policy_checker,policy_checker,1,30.38,qwen2.5:7b
+n8n,guaranteed_safe,8,error,"exception: HTTP Request4: The value in the ""JSON Body"" field is not valid JSON",0,90.95,qwen2.5:7b
+n8n,guaranteed_safe,9,rejected_at_policy_checker,policy_checker,1,25.33,qwen2.5:7b
+n8n,guaranteed_safe,10,rejected_at_policy_checker,policy_checker,1,40.44,qwen2.5:7b

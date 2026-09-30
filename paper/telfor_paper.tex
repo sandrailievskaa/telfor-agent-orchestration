@@ -1,0 +1,200 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage{parskip}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage[most]{tcolorbox}
+\usepackage{xcolor}
+\usepackage{url}
+\usepackage{placeins}
+\usepackage{tabularx}
+\usepackage{makecell}
+\usepackage{caption}
+
+\title{Guardrailed LLM Agent Orchestration for Network Change Automation: A Comparative Implementation Study of n8n, Langflow and LangGraph}
+
+\author{
+\IEEEauthorblockN{Sandra Ilievska}
+\IEEEauthorblockA{
+\textit{Faculty of Computer Science and Engineering} \\
+\textit{Ss. Cyril and Methodius University in Skopje} \\
+Skopje, North Macedonia \\
+sandra.ilievska@students.finki.ukim.mk}
+\and
+\IEEEauthorblockN{Sonja Filipovska}
+\IEEEauthorblockA{
+\textit{Faculty of Computer Science and Engineering} \\
+\textit{Ss. Cyril and Methodius University in Skopje} \\
+Skopje, North Macedonia \\
+sonja.filiposka@finki.ukim.mk}
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Production networks tolerate close to zero error, yet large language model (LLM) agents are probabilistic by construction. This tension, not the choice of tooling, is the central obstacle to deploying LLM agents for network change automation, and it explains why network operators withhold trust from agentic proposals unless a human remains in the loop. We argue that the decisive design factor is not whether an agent is purpose-built or assembled from an off-the-shelf orchestration platform, but whether every agent step is bounded by a deterministic guardrail that inspects its structured output before the next step, or a human, ever sees it. We implement an identical ten-step, guardrail-checked firewall-provisioning pipeline -- intent parsing, validation, inventory lookup, policy check, planning, dry-run, human approval, apply, verification and conditional rollback -- in three orchestration platforms: n8n, Langflow and LangGraph. Each of the six LLM-driven steps returns structured JSON that is independently re-checked against ground truth by a deterministic function, not by the model's own assertions. We run each of four hand-designed intents ten times against a single local model (qwen2.5:7b via Ollama) on LangGraph and n8n, and run the human-approval-to-rollback segment ten times on Langflow, whose remaining steps could not be wired end-to-end within the project's time budget. The results surface two distinct classes of failure: LLM stochasticity, which produces a non-trivial false-rejection rate even on deliberately safe requests, and a platform-level architectural gap, in which n8n's HTTP-based wiring silently drops a guardrail check that LangGraph's code-first state model enforces by construction, letting a policy-violating request reach the apply step in 8 of 10 trials. All code, guardrail logic and raw experiment logs are publicly available.
+\end{abstract}
+
+\begin{IEEEkeywords}
+LLM agents, guardrails, agentic orchestration, network automation, human-in-the-loop, n8n, Langflow, LangGraph
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+A firewall rule applied to the wrong subnet, or a rollback that silently fails to trigger, has consequences that a malformed chatbot reply does not. This is the property that separates network change automation from most other LLM agent applications, and it sets the requirement this paper takes as its starting point: an agentic pipeline for network operations must assume the model will occasionally be wrong, and must be engineered so that a wrong output is caught before it propagates, not after.
+
+Two design choices follow from this requirement. First, a human must approve the change before it is applied, because no current guardrail can substitute for operator judgment on business risk. Second, and less commonly discussed, every intermediate agent in the pipeline must be constrained by a guardrail of its own. Without this, an error introduced by the first agent -- for instance, a misread source subnet -- propagates silently through validation, policy checking and planning, and only surfaces to the human at the approval step, by which point the reasoning chain that produced it is opaque. We therefore treat per-agent guardrails, not the choice of orchestration engine, as the primary independent variable of this study.
+
+Whether these guardrails are implemented inside a hand-written agent or assembled from nodes in a general-purpose orchestration platform turns out to matter less than is often assumed: both paths require an equivalent amount of engineering effort, which in practice is spent on the same two things -- defining a strict output contract for each agent and writing the deterministic check that enforces it. What does differ across platforms is how naturally that contract can be expressed and how easily a check can be silently omitted. This paper investigates that question empirically. We implement one fixed use case -- natural-language-driven firewall-rule provisioning, using NetBox as inventory and a mock firewall API -- identically in n8n, Langflow and LangGraph, instrument every agent step with the same guardrail logic, and run each implementation through repeated trials of the same four intents to measure both the failure rate and, where it differs across platforms, its cause.
+
+The remainder of this paper is organized as follows. Section II reviews related work on LLM agents in network management. Section III describes the three platforms. Section IV presents the use case and the guardrail architecture shared across implementations. Section V describes the experimental methodology. Section VI reports the results. Section VII discusses the two classes of failure observed and their implications. Section VIII concludes.
+
+\section{Related Work}
+
+Several recent surveys document the growing use of LLMs in network and service management. Hong \textit{et al.} survey LLM-based approaches to network management and operations, covering configuration, monitoring and troubleshooting tasks \cite{hong2025survey}. Boateng \textit{et al.} provide a broader survey of LLMs across communication, network and service management domains, including mobile, vehicular, cloud and edge networks \cite{boateng2025survey}. A related survey on LLM-based multi-agent orchestration proposes a taxonomy of centralized, decentralized and hierarchical coordination topologies for agentic systems in general \cite{futureinternet2026}.
+
+Closer to our use case, several production and research systems apply multi-agent LLMs to network management directly. Wang \textit{et al.} report on Confucius, a multi-agent LLM framework deployed at Meta that models network management workflows as directed acyclic graphs, integrates retrieval-augmented generation, and enforces validation together with explicit human/model interaction primitives \cite{wang2025confucius}. Brodimas \textit{et al.} propose a distributed multi-agent architecture that combines agentic AI with intent-based networking to translate natural-language intents into infrastructure and service actions for mobile networks \cite{brodimas2025intent}. In the optical domain, Zaid \textit{et al.} present a multi-agent design for LLM-assisted network management that reports a 96.7\% success rate in translating user intent into network operations without model fine-tuning \cite{zaid2025multiagent}.
+
+Each of these systems is a purpose-built agent framework, and none reports the trial-to-trial stability of its guardrails under repeated, identical input -- the central measurement of this paper. To our knowledge, no existing study benchmarks general-purpose orchestration platforms against one another on an identical, safety-critical network-automation pipeline, nor isolates whether a guardrail failure originates in model stochasticity or in the orchestration layer's wiring. This is the gap this paper addresses.
+
+\section{Orchestration Platforms Under Study}
+
+\subsection{n8n}
+n8n is a visual, node-based workflow automation platform. An LLM step is a chain or agent node wired to arbitrary downstream nodes -- HTTP requests, conditional (If) nodes, code nodes -- on the same canvas. A guardrail is therefore expressed as a separate HTTP call to an external check endpoint followed by an If node that branches on its response. This separation is convenient, but, as Section VII shows, it also makes it possible to wire the If node against the wrong field without any static check catching the mistake. n8n's Wait node provides a documented human-in-the-loop primitive: it pauses the execution and exposes a resumable form URL, which an operator (or, in our experiments, an automated approval) posts back to resume the run.
+
+\subsection{Langflow}
+Langflow is an open-source, Python-based visual framework in which components are wired on a canvas in the same style as n8n, but each component is a thinner wrapper around Python/LangChain primitives. Human-in-the-loop support is comparatively immature: it is exposed only through a background-execution v2 API (\texttt{/api/v2/workflows}) that suspends a run at a named component and resumes it via a separate endpoint. The more commonly documented synchronous build endpoint (\texttt{/api/v1/build}) does not honor this suspension at all and silently executes both branches of a pending decision -- a platform-specific pitfall documented in Section V.
+
+\subsection{LangGraph}
+LangGraph is a code-first orchestration runtime in which an agentic workflow is an explicit state graph: nodes are Python functions operating on a shared, typed state object, and edges, including conditional edges, are ordinary Python control flow. Human-in-the-loop is a first-class primitive (\texttt{interrupt}), and, critically for this study, a guardrail check is just a Python function call whose result and the upstream agent's own output are both directly addressable fields of the same state object. This removes the wiring step that introduces risk in n8n and Langflow, at the cost of requiring code rather than a canvas.
+
+\section{Use Case and Guardrail Architecture}
+
+\subsection{Use case}
+The use case is natural-language-driven firewall-rule provisioning: an operator requests, in natural language, that access be allowed from a source subnet to a destination subnet and port, and the pipeline must interpret, validate, check against policy, plan, simulate, obtain approval, apply, verify and, if verification fails, roll back the change. NetBox serves as the inventory source of truth; a mock firewall API, logged to a plain-text access log, stands in for a production device. Table~\ref{tab:usecase} gives the ten steps, implemented identically across all three platforms.
+
+We revised the step order used in an earlier draft of this pipeline after noting that a rollback plan is only useful if it exists \emph{before} the change is risked, not after. The planner (step 5) therefore emits the candidate rule and its rollback plan in the same structured output; step 10 executes that stored plan only if verification (step 9) fails.
+
+\begin{table}[!t]
+\caption{Guardrail-Checked Use-Case Steps}
+\label{tab:usecase}
+\centering
+\footnotesize
+\begin{tabularx}{\columnwidth}{@{}c X l@{}}
+\hline
+\textbf{\#} & \textbf{Action} & \textbf{Guardrail} \\
+\hline
+1  & Parse request into structured intent (source, destination, port, protocol) & Schema + field completeness \\
+2  & Validate address/port/protocol syntax & Deterministic syntax check \\
+3  & Query NetBox for overlapping rules & Overlap ground truth \\
+4  & Policy/security check & CIDR width + port sensitivity ground truth \\
+5  & Propose rule, change plan \emph{and} rollback plan & Schema + plan completeness \\
+6  & Dry-run / simulate the change & Simulation result check \\
+7  & Pause, request human approval & N/A (human decision) \\
+8  & Apply the rule via the (mock) API & HTTP status check \\
+9  & Verify the change took effect & Independent re-read of mock device state \\
+10 & Execute stored rollback plan \emph{iff} step 9 failed & Conditional, deterministic \\
+\hline
+\end{tabularx}
+\end{table}
+
+\subsection{Guardrail architecture}
+Every LLM-driven step (1, 2, 4, 5) is constrained by a two-layer guardrail, applied uniformly across all three platforms:
+
+\begin{enumerate}
+\item \textbf{Structural check}: the agent's output is validated against a JSON Schema and, where applicable, cross-checked against a ground truth computed independently of the model -- for example, CIDR prefix width and port membership in a sensitive-port set are computed in Python with the standard \texttt{ipaddress} library, never taken on the model's word.
+\item \textbf{Business-decision check}: the model's own pass/fail field (e.g. \texttt{policy\_pass}) is read and enforced separately from the structural check above.
+\end{enumerate}
+
+Both checks must pass for the pipeline to proceed; either one failing routes the run to a terminal rejection state that names the failing step. This two-layer separation, not the presence of a guardrail alone, is what Section VII identifies as the point at which the platforms diverge in practice.
+
+\section{Experimental Methodology}
+
+All three pipelines use a single, fixed LLM -- \texttt{qwen2.5:7b}, served locally via Ollama -- so that any behavioral difference is attributable to the orchestration layer or to model stochasticity, not to a different model. No external or hosted LLM endpoint was used in the reported experiments; multi-model comparison is identified as future work in Section VIII, not claimed here.
+
+Four intents, identical across platforms and held fixed throughout, probe distinct guardrail paths:
+\begin{itemize}
+\item \emph{simple} -- a syntactically complete, policy-compliant request (expected: approved);
+\item \emph{edge\_incomplete} -- a request missing required fields (expected: rejected at step 1);
+\item \emph{policy\_violating} -- a request with an overly wide source subnet and a sensitive destination port (expected: rejected at step 4);
+\item \emph{guaranteed\_safe} -- a request designed to satisfy neither of the two defined high-risk conditions (expected: approved).
+\end{itemize}
+
+Each intent was run ten times per platform, with the human-approval step auto-approved to isolate LLM/guardrail stability from the (deterministic) approval decision itself, yielding 80 LangGraph/n8n runs. Full end-to-end wiring of steps 1--6 proved impractical to complete for Langflow within the project schedule: each step exists as an independently verified sub-chain, but connecting them would have required rebuilding prompt payloads and re-wrapped guardrail queries across roughly six non-trivial integration points. We therefore scoped the Langflow trial to its connected segment, steps 7--10 (human approval through conditional rollback), run ten times against a fixed static approval request. This segment contains no LLM call, so it measures infrastructure stability (suspend/resume reliability) rather than model stochasticity; this is a stated limitation, not a platform capability judgment.
+
+Outcome detection relies on ground truth external to each platform's own reporting: for Langflow, the \texttt{outputs} dictionary returned by the v2 API was found to omit vertex keys inconsistently across otherwise-identical runs, so outcomes are instead read from the mock firewall's access log (presence/absence of \texttt{POST /rules/apply}, \texttt{GET /rules/\{id\}}, \texttt{DELETE /rules/\{id\}}).
+
+\section{Results}
+
+Table~\ref{tab:results} reports outcomes for the four intents on LangGraph and n8n (n=10 each); Langflow results are reported separately in Section VII.C.
+
+\begin{table}[!t]
+\caption{Outcomes per Intent, LangGraph vs.\ n8n (n=10 each)}
+\label{tab:results}
+\centering
+\footnotesize
+\begin{tabularx}{\columnwidth}{@{}X c c@{}}
+\hline
+\textbf{Intent (expected outcome)} & \textbf{LangGraph} & \textbf{n8n} \\
+\hline
+\texttt{edge\_incomplete} (reject, step 1) & 10/10 correct & 10/10 correct \\
+\texttt{policy\_violating} (reject, step 4) & 10/10 correct & \textbf{0/10 correct} \\
+\texttt{simple} (approve) & 0/10 correct & 2/10 correct \\
+\texttt{guaranteed\_safe} (approve) & 0/10 correct & 3/10 correct \\
+\hline
+\end{tabularx}
+\end{table}
+
+Structural rejection (\texttt{edge\_incomplete}) is perfectly consistent across platforms: both reject the incomplete request in every trial, in under 6 s on average, before any downstream LLM call is made. This is the cheapest and most reliable guardrail in the pipeline.
+
+Semantic rejection (\texttt{policy\_violating}) is not: LangGraph rejects it in all 10 trials; n8n approves it in 8 of 10, with the remaining 2 failing later, at the planner step, for unrelated reasons. Section VII.A traces this to an architectural cause rather than a model difference.
+
+Approval of safe requests is unreliable on both platforms. \texttt{guaranteed\_safe} was designed to satisfy neither high-risk condition in the policy prompt, yet LangGraph rejected it in all 10 trials and n8n in 7 of 10. A controlled ablation -- rerunning \texttt{guaranteed\_safe} on LangGraph with an explicit prompt instruction to default to approval absent a defined high-risk condition -- did not close the gap (0/10 approved across a further 10 trials), indicating the false-rejection rate is not attributable to a single fixable prompt defect. Section VII.B discusses this.
+
+\section{Discussion}
+
+\subsection{A platform-level guardrail gap, not a model difference}
+For \texttt{policy\_violating}, the model itself behaves identically on both platforms: it correctly emits \texttt{policy\_pass: false} with \texttt{risk\_level: "high"}. The divergence is introduced downstream. LangGraph's guardrail node checks both layers described in Section IV.B -- structural consistency and the model's own \texttt{policy\_pass} field -- because both are ordinary attribute reads on the same state object. n8n's If node checks only the structural layer, because the guardrail was implemented as a call to an external HTTP endpoint that reports structural consistency, and the model's \texttt{policy\_pass} field was never independently routed to the branching node. A structurally well-formed, correctly-labeled-as-dangerous output is consequently read as ``passed'' and the run proceeds to apply. This is a wiring omission, reproducible and traceable to two specific nodes in the n8n graph, not an LLM failure -- and it is precisely the class of error the two-layer guardrail discipline in Section IV.B was designed to prevent. Its absence in one of the two full pipeline implementations is itself evidence for the paper's central claim: the orchestration layer, not only the model, determines whether a guardrail design survives implementation.
+
+\subsection{Model stochasticity as a distinct failure mode}
+Independent of the platform gap above, both platforms exhibit a high false-rejection rate on requests engineered to be safe. Guardrail logs attribute this to two mechanisms: the model classifying a request as high-risk against explicit, satisfied-by-construction criteria (a business-decision error), and the model emitting an internally inconsistent structured output, such as \texttt{risk\_level: "high"} paired with \texttt{policy\_pass: true} (a structural error caught by the schema/consistency check). That an explicit prompt correction did not reduce the rejection rate suggests this class of error is a property of the 7B-parameter model's reliability on structured risk classification, not of prompt phrasing -- a materially different, and more actionable, conclusion than either failure mode viewed in isolation.
+
+\subsection{Langflow: infrastructure stability under a narrower scope}
+The Langflow segment (steps 7--10, ten trials, static request, no LLM call) completed successfully in all 10 trials, with a mean duration of approximately 130 s per run. The suspend/resume mechanism -- job submission, polling to a \texttt{suspended} state, retrieval of a pending request id, resume with an explicit decision, polling to completion -- proved reliable once the correct v2 endpoint was identified; an earlier attempt using the platform's synchronous build endpoint silently bypassed the pause entirely and is documented as a methodological hazard for any future use of this API. Because this segment carries no LLM call, its stability is not directly comparable to the LangGraph/n8n guardrail results in Table~\ref{tab:results}; it demonstrates that the underlying human-in-the-loop infrastructure is dependable, without speaking to end-to-end guardrail behavior across the full pipeline.
+
+\subsection{Implications}
+Two practical guidelines follow. First, a guardrail specification is not self-enforcing: platforms that separate an agent's output from its own decision field across multiple nodes require an explicit, auditable wire from that field to the branching logic, and this wire should be checked as part of implementation review, not assumed from the presence of a guardrail call. Second, false rejection of safe input is, on the evidence here, at least as large a deployment obstacle as missed detection of unsafe input, and merits equal attention in guardrail design for smaller, locally-hosted models.
+
+\section{Conclusion and Future Work}
+We implemented an identical ten-step, guardrail-checked firewall-provisioning pipeline in n8n, Langflow and LangGraph, and ran 90 repeated trials across four intents and a single fixed model. The results separate two failure modes that are easy to conflate: model stochasticity, present on both fully-wired platforms and not resolved by prompt adjustment alone, and a platform-specific wiring gap in n8n that let a policy-violating request reach the apply step in 8 of 10 trials. Langflow's human-in-the-loop and rollback infrastructure was stable across all 10 trials of its narrower, LLM-free scope.
+
+Future work includes completing the end-to-end wiring of Langflow steps 1--6, repeating the experiment across several open-source models of comparable size to separate model-specific from architecture-specific instability, and extending the policy/planning guardrails with a wider set of adversarial intents. All implementation code, guardrail functions and the complete raw experiment log (100 runs) are publicly available at \url{https://github.com/sandrailievskaa/telfor-agent-orchestration}.
+
+\begin{thebibliography}{00}
+
+\bibitem{hong2025survey} J. Hong, N. Van Tu, and J. W.-K. Hong, ``A Comprehensive Survey on LLM-Based Network Management and Operations,'' \textit{International Journal of Network Management}, vol. 35, no. 6, e70029, 2025.
+
+\bibitem{boateng2025survey} G. O. Boateng, H. Sami, A. Alagha, H. Elmekki, A. Hammoud, R. Mizouni, A. Mourad, H. Otrok, J. Bentahar, S. Muhaidat, C. Talhi, Z. Dziong, and M. Guizani, ``A Survey on Large Language Models for Communication, Network, and Service Management: Application Insights, Challenges, and Future Directions,'' \textit{IEEE Communications Surveys \& Tutorials}, 2025.
+
+\bibitem{futureinternet2026} ``LLM-Based Multi-Agent Orchestration: A Survey of Frameworks, Communication Protocols, and Emerging Patterns,'' \textit{Future Internet}, vol. 18, no. 6, art. 326, 2026.
+
+\bibitem{wang2025confucius} Z. Wang, S. Lin, G. Yan, S. Ghorbani, M. Yu, J. Zhou, N. Hu, L. Baruah, S. Peters, S. Kamath, J. Yang, and Y. Zhang, ``Intent-Driven Network Management with Multi-Agent LLMs: The Confucius Framework,'' in \textit{Proc. ACM SIGCOMM 2025 Conference}, pp. 347--362.
+
+\bibitem{brodimas2025intent} D. Brodimas, A. Birbas, D. Kapolos, and S. Denazis, ``Intent-Based Infrastructure and Service Orchestration Using Agentic-AI,'' \textit{IEEE Open Journal of the Communications Society}, vol. 6, pp. 7150--7168, 2025.
+
+\bibitem{zaid2025multiagent} H. Zaid, P. Safari, B. Shariati, A. Jafari, M. Balanici, and J. K. Fischer, ``Multi-Agent Design for LLM-assisted Network Management,'' in \textit{Proc. Optical Fiber Communication Conference (OFC) 2025}, paper W1A.4.
+
+\bibitem{n8ndocs} n8n Documentation, ``Tools Agent'' and ``AI Agent Tool node,'' docs.n8n.io, 2026. [Online]. Available: https://docs.n8n.io
+
+\bibitem{langflowdocs} Langflow Documentation, ``Agents'' and ``Multi-agent workflows,'' docs.langflow.org, 2026. [Online]. Available: https://docs.langflow.org
+
+\bibitem{langgraphdocs} LangChain, ``LangGraph Overview,'' docs.langchain.com, 2026. [Online]. Available: https://docs.langchain.com
+
+\end{thebibliography}
+
+\end{document}
