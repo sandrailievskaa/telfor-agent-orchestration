@@ -30,6 +30,13 @@ sandra.ilievska@students.finki.ukim.mk}
 \textit{Ss. Cyril and Methodius University in Skopje} \\
 Skopje, North Macedonia \\
 sonja.filiposka@finki.ukim.mk}
+\and
+\IEEEauthorblockN{Roman Lapacz}
+\IEEEauthorblockA{
+\textit{Poznan Supercomputing and Networking Center (PCSS)} \\
+Poznan, Poland \\
+% TODO(Sandra): insert Roman Lapacz's correct affiliation email before submission
+}
 }
 
 \begin{document}
@@ -115,7 +122,7 @@ Both checks must pass for the pipeline to proceed; either one failing routes the
 
 \section{Experimental Methodology}
 
-All three pipelines use a single, fixed LLM -- \texttt{qwen2.5:7b}, served locally via Ollama -- so that any behavioral difference is attributable to the orchestration layer or to model stochasticity, not to a different model. No external or hosted LLM endpoint was used in the reported experiments; multi-model comparison is identified as future work in Section VIII, not claimed here.
+The results reported in Section VI were collected with a single, fixed LLM -- \texttt{qwen2.5:7b}, served locally via Ollama -- so that any behavioral difference between platforms is attributable to the orchestration layer or to model stochasticity, not to a different model. This isolates the two failure modes discussed in Section VII without a second variable. A second evaluation round, repeating the same 90 trials against additional open-source models hosted by the Poznan Supercomputing and Networking Center (PCSS) -- candidates include GLM, Qwen (a larger variant than the local one) and DeepSeek -- is in progress at the time of writing and will be added to Section VI before submission, to test whether the two failure modes identified here are specific to \texttt{qwen2.5:7b} or generalize across model families.
 
 Four intents, identical across platforms and held fixed throughout, probe distinct guardrail paths:
 \begin{itemize}
@@ -173,7 +180,10 @@ Two practical guidelines follow. First, a guardrail specification is not self-en
 \section{Conclusion and Future Work}
 We implemented an identical ten-step, guardrail-checked firewall-provisioning pipeline in n8n, Langflow and LangGraph, and ran 90 repeated trials across four intents and a single fixed model. The results separate two failure modes that are easy to conflate: model stochasticity, present on both fully-wired platforms and not resolved by prompt adjustment alone, and a platform-specific wiring gap in n8n that let a policy-violating request reach the apply step in 8 of 10 trials. Langflow's human-in-the-loop and rollback infrastructure was stable across all 10 trials of its narrower, LLM-free scope.
 
-Future work includes completing the end-to-end wiring of Langflow steps 1--6, repeating the experiment across several open-source models of comparable size to separate model-specific from architecture-specific instability, and extending the policy/planning guardrails with a wider set of adversarial intents. All implementation code, guardrail functions and the complete raw experiment log (100 runs) are publicly available at \url{https://github.com/sandrailievskaa/telfor-agent-orchestration}.
+The PCSS-hosted multi-model round described in Section V will determine whether the two failure modes identified here are specific to \texttt{qwen2.5:7b} or generalize across model families of comparable size; those results will be added to this paper before submission. Remaining future work includes completing the end-to-end wiring of Langflow steps 1--6 and extending the policy/planning guardrails with a wider set of adversarial intents. All implementation code, guardrail functions and the complete raw experiment log are publicly available at \url{https://github.com/sandrailievskaa/telfor-agent-orchestration}.
+
+\section*{Acknowledgment}
+The additional open-source model evaluation described in Section V uses compute infrastructure provided by the Poznan Supercomputing and Networking Center (PCSS), Poland, made available through R. Lapacz. The authors thank PCSS for this access.
 
 \begin{thebibliography}{00}
 
