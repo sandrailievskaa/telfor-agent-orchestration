@@ -184,6 +184,32 @@ Semantic rejection (\texttt{policy\_violating}) is not: LangGraph rejects it in 
 
 Approval of safe requests is unreliable on both platforms. \texttt{guaranteed\_safe} was designed to satisfy neither high-risk condition in the policy prompt, yet LangGraph approved it in 0 of 10 trials (10/10 rejected at the policy check) and n8n in only 3 of 10 (5 rejected at the policy check, 1 at the planner, 1 a malformed-JSON error rather than a guardrail rejection). A controlled ablation -- rerunning \texttt{guaranteed\_safe} on LangGraph with an explicit prompt instruction to default to approval absent a defined high-risk condition -- did not close the gap (0/10 approved across a further 10 trials), indicating the false-rejection rate is not attributable to a single fixable prompt defect. Section VII.B discusses this.
 
+\subsection{Multi-model round (LangGraph)}
+
+%% TODO(Sandra): replace TBD cells once each model's 40-run harness
+%% (test-harness/run_experiment.py, LLM_PROVIDER=external) completes.
+%% Source: results/experiment_results.csv, platform=langgraph, filtered
+%% by the `model` column. Do not hand-edit numbers without re-checking
+%% the CSV -- same rule as every other number in this paper.
+To test whether the two failure modes in Sections VII.A and VII.B are specific to \texttt{qwen2.5:7b} or generalize across model families, we repeat the same 40-trial LangGraph harness against two PCSS-hosted models (Section V): GLM-5.1, and a second model selected from Qwen2.5:72b or DeepSeek-V3.1. Table~\ref{tab:multimodel} reports outcomes once collected.
+
+\begin{table}[!t]
+\caption{LangGraph Outcomes per Intent, Across Models (n=10 each)}
+\label{tab:multimodel}
+\centering
+\footnotesize
+\begin{tabularx}{\columnwidth}{@{}X c c c@{}}
+\hline
+\textbf{Intent} & \textbf{qwen2.5:7b} & \textbf{GLM-5.1} & \textbf{TBD} \\
+\hline
+\texttt{edge\_incomplete} & 10/10 correct & TBD & TBD \\
+\texttt{policy\_violating} & 10/10 correct & TBD & TBD \\
+\texttt{simple} & 0/10 correct & TBD & TBD \\
+\texttt{guaranteed\_safe} & 0/10 correct & TBD & TBD \\
+\hline
+\end{tabularx}
+\end{table}
+
 \section{Discussion}
 
 \subsection{A platform-level guardrail gap, not a model difference}
