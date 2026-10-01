@@ -1,5 +1,6 @@
 \documentclass[conference]{IEEEtran}
 \IEEEoverridecommandlockouts
+\usepackage[utf8]{inputenc}
 \usepackage{parskip}
 \usepackage{cite}
 \usepackage{amsmath,amssymb,amsfonts}
@@ -24,17 +25,18 @@
 Skopje, North Macedonia \\
 sandra.ilievska@students.finki.ukim.mk}
 \and
-\IEEEauthorblockN{Sonja Filipovska}
+\IEEEauthorblockN{Sonja Filiposka}
 \IEEEauthorblockA{
 \textit{Faculty of Computer Science and Engineering} \\
 \textit{Ss. Cyril and Methodius University in Skopje} \\
 Skopje, North Macedonia \\
 sonja.filiposka@finki.ukim.mk}
 \and
-\IEEEauthorblockN{Roman Lapacz}
+\IEEEauthorblockN{Roman Łapacz}
 \IEEEauthorblockA{
-\textit{Poznan Supercomputing and Networking Center (PCSS)} \\
-Poznan, Poland}
+\textit{Poznan Supercomputing and Networking Center - PSNC} \\
+Poznan, Poland \\
+romradz@man.poznan.pl}
 }
 % TODO(Sandra): insert Roman Lapacz's correct affiliation email in the block above before submission
 
@@ -141,7 +143,7 @@ Where a business-decision field exists, both layers must pass for the pipeline t
 
 \section{Experimental Methodology}
 
-The results reported in Section VI were collected with a single, fixed LLM -- \texttt{qwen2.5:7b}, served locally via Ollama -- so that any behavioral difference between platforms is attributable to the orchestration layer or to model stochasticity, not to a different model. This isolates the two failure modes discussed in Section VII without a second variable. A second evaluation round, repeating the same 90 trials against additional open-source models hosted by the Poznan Supercomputing and Networking Center (PCSS) -- candidates include GLM, Qwen (a larger variant than the local one) and DeepSeek -- is in progress at the time of writing and will be added to Section VI before submission, to test whether the two failure modes identified here are specific to \texttt{qwen2.5:7b} or generalize across model families.
+The results reported in Section VI were collected with a single, fixed LLM -- \texttt{qwen2.5:7b}, served locally via Ollama -- so that any behavioral difference between platforms is attributable to the orchestration layer or to model stochasticity, not to a different model. This isolates the two failure modes discussed in Section VII without a second variable. A second evaluation round, repeating the same 90 trials against additional open-source models hosted by the Poznan Supercomputing and Networking Center (PSNC) -- candidates include GLM, Qwen (a larger variant than the local one) and DeepSeek -- is in progress at the time of writing and will be added to Section VI before submission, to test whether the two failure modes identified here are specific to \texttt{qwen2.5:7b} or generalize across model families.
 
 Four intents, identical across platforms and held fixed throughout, probe distinct guardrail paths:
 \begin{itemize}
@@ -207,7 +209,7 @@ We implemented an identical ten-step, guardrail-checked firewall-provisioning pi
 The PCSS-hosted multi-model round described in Section V will determine whether the two failure modes identified here are specific to \texttt{qwen2.5:7b} or generalize across model families of comparable size; those results will be added to this paper before submission. Remaining future work includes wiring step 3 against a live NetBox instance rather than the fixed stub used here (Section IV.A), completing the end-to-end wiring of Langflow steps 1--6, running a supervisor-pattern variant to empirically test the reasoning in Section VII.D, and extending the policy/planning guardrails with a wider set of adversarial intents. All implementation code, guardrail functions and the complete raw experiment log are publicly available at \url{https://github.com/sandrailievskaa/telfor-agent-orchestration}.
 
 \section*{Acknowledgment}
-The additional open-source model evaluation described in Section V uses compute infrastructure provided by the Poznan Supercomputing and Networking Center (PCSS), Poland, made available through R. Lapacz. The authors thank PCSS for this access.
+The additional open-source model evaluation described in Section V uses compute infrastructure provided by the Poznan Supercomputing and Networking Center (PSNC), Poland, made available through R. {\L}apacz. The authors thank PSNC for this access.
 
 \begin{thebibliography}{00}
 
