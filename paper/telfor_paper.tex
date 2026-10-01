@@ -78,7 +78,7 @@ n8n is a visual, node-based workflow automation platform. An LLM step is a chain
 Langflow is an open-source, Python-based visual framework, wired on a canvas like n8n, but each component is a thinner wrapper around Python/LangChain primitives. HITL support is comparatively immature: it is exposed only through a background-execution v2 API (\texttt{/api/v2/workflows}) that suspends a run at a named component and resumes it via a separate endpoint. The more commonly documented synchronous build endpoint (\texttt{/api/v1/build}) does not honor this suspension at all and silently executes both branches of a pending decision -- a pitfall documented in Section V.
 
 \subsection{LangGraph}
-LangGraph is a code-first runtime in which a workflow is an explicit state graph: nodes are Python functions on a shared, typed state object, and edges (including conditional edges) are ordinary control flow. HITL is a first-class primitive (\texttt{interrupt}), and, critically here, a guardrail check is a Python function call whose result and the upstream agent's output are both directly addressable fields of the same state object -- removing the wiring step that introduces risk in n8n and Langflow, at the cost of requiring code rather than a canvas.
+LangGraph is a code-first runtime in which a workflow is an explicit state graph: nodes are Python functions on a shared, typed state object, and edges (including conditional edges) are ordinary control flow. HITL is a first-class primitive (compile-time \texttt{interrupt\_before}), and, critically here, a guardrail check is a Python function call whose result and the upstream agent's output are both directly addressable fields of the same state object -- removing the wiring step that introduces risk in n8n and Langflow, at the cost of requiring code rather than a canvas.
 
 \begin{table}[!t]
 \caption{Qualitative Comparison Criteria}
@@ -91,7 +91,7 @@ LangGraph is a code-first runtime in which a workflow is an explicit state graph
 \hline
 Workflow definition & Canvas (n8n, Langflow) vs.\ code (LangGraph): faster to start vs.\ easier to diff/review \\
 Guardrail wiring & LangGraph co-locates output and decision field; canvas platforms split them across nodes (VII.A's gap) \\
-HITL maturity & n8n Wait: stable, documented. Langflow v2 API: works, silent-bypass pitfall (III.B). LangGraph \texttt{interrupt}: first-class \\
+HITL maturity & n8n Wait: stable, documented. Langflow v2 API: works, silent-bypass pitfall (III.B). LangGraph \texttt{interrupt\_before}: first-class \\
 Pre-/post-change checks & Shared Python module on all three: LangGraph imports directly, n8n/Langflow via HTTP wrapper \\
 Rollback mechanism & Implemented identically (Table~\ref{tab:usecase}, step 10) on all three \\
 Observability & First-class state field in LangGraph; n8n/Langflow need post-hoc per-node reads \\
