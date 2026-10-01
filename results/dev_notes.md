@@ -2430,3 +2430,54 @@ LLM-ориентираните low-code/HTTP-based orchstratori (n8n) можат
 `policy_pass` вредноста и If3 да провери ОБАТА услови. Тоа е 2-3 дополнителни
 n8n нод промени - оставено ненаправено за TELFOR поради роков притисок,
 и документирано тука за методолошка транспарентност во трудот.
+
+## 48. Multi-model рунда (PCSS AI HUB, GLM-5.1) — 40/40 точни исходи, LangGraph
+
+**Контекст:** По менторско одобрение (co-authorship/acknowledgment условено на
+реална употреба на PCSS инфраструктурата), имплементиран е `LLM_PROVIDER=external`
+патот во `guardrails/llm_client.py` - OpenAI/LiteLLM-compatible повик кон
+`https://llm.hpc.psnc.pl/v1/chat/completions`, со `PCSS_API_KEY`/`PCSS_BASE_URL`
+во `.env`. Точните достапни model id-иња потврдени преку `GET /v1/models`
+со истиот токен; избран `GLM-5.1` (не `GLM-5.2`) според менторското упатство
+„една верзија постара од најновата/најголемата" (overload-ризик кај flagship
+верзии).
+
+**Methodology:** истиот `test-harness/run_experiment.py` harness (4 intents ×
+10 повторувања, LangGraph платформа) повторно пуштен со
+`LLM_PROVIDER=external LLM_MODEL=GLM-5.1`, без никаква промена во
+`guardrails/*.py`, `contracts/*.schema.json` или `graph_v1.py` - чисто
+model swap преку конфигурација, исти промптови, иста guardrail логика.
+
+**Резултати (40/40 завршени, 0 грешки):**
+
+| intent | qwen2.5:7b (локален) | GLM-5.1 (PCSS) |
+|---|---|---|
+| `edge_incomplete` | 10/10 `rejected_at_intent_parser` | 10/10 `rejected_at_intent_parser` |
+| `policy_violating` | 10/10 `rejected_at_policy_checker_denied`/`_validator_invalid` | 10/10 `rejected_at_policy_checker_denied` |
+| `simple` | 0/10 `ok` (10/10 лажно одбиени) | **10/10 `ok`** |
+| `guaranteed_safe` | 0/10 `ok` (10/10 лажно одбиени) | **10/10 `ok`** |
+
+GLM-5.1 = 40/40 точни исходи. qwen2.5:7b = 20/40 (точен на структурните/
+семантичките одбивања, но системски лажно одбива и двата безбедни intent-а).
+
+**Интерпретација:** over-cautiousness пристрасноста (Наод #9/#12) НЕ се
+репродуцира со GLM-5.1 - истиот guardrail дизајн, истиот промпт, иста
+pipeline логика, различен модел → целосно поинакво однесување на безбедните
+intents. Ова е директна, емпириска потврда дека пристрасноста е својство на
+помалиот (7B) локален модел, не на guardrail архитектурата или промпт
+дизајнот - прашањето поставено во Section V/VII.B на трудот.
+
+**Времетраење:** GLM-5.1 (reasoning модел, целосен chain-of-thought пред
+структуриран одговор) е ~3-4x побавен од qwen2.5:7b по извршување
+(`simple` intent: просек ~143s наспроти ~30-40s локално) - очекувано поради
+reasoning overhead, не проблем со PCSS инфраструктурата. Вкупна рунда ~87
+минути за 40 извршувања.
+
+**Опсег:** само LangGraph тестиран со GLM-5.1 (not n8n/Langflow) - n8n-овите
+LLM повици одат преку сопствени native `lmChatOllama` nodes во workflow-то,
+не преку `guardrails/llm_client.py`, па multi-model проширување на n8n би
+барало вистинска замена на nodes (ризик од нова wiring грешка), не само env
+var промена. Одлучено (менторско упатство по видениот резултат) да НЕ се
+продолжи со втор PCSS модел - еден чист, силен резултат е доволен за да се
+одговори на прашањето поставено во Section V, без непотребно трошење на
+PCSS токен-буџетот.
