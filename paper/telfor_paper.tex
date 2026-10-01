@@ -34,11 +34,10 @@ sonja.filiposka@finki.ukim.mk}
 \and
 \IEEEauthorblockN{Roman Łapacz}
 \IEEEauthorblockA{
-\textit{Poznan Supercomputing and Networking Center - PSNC} \\
+\textit{Poznan Supercomputing and Networking Center - PCSS} \\
 Poznan, Poland \\
 romradz@man.poznan.pl}
 }
-% TODO(Sandra): insert Roman Lapacz's correct affiliation email in the block above before submission
 
 \begin{document}
 
@@ -142,7 +141,7 @@ Where a business-decision field exists, both layers must pass for the pipeline t
 
 \section{Experimental Methodology}
 
-The LangGraph/n8n results reported in Section VI were collected with a single, fixed LLM -- \texttt{qwen2.5:7b}, served locally via Ollama -- so that any behavioral difference between platforms is attributable to the orchestration layer or to model stochasticity, not to a different model. This isolates the two failure modes discussed in Section VII without a second variable. To test whether those failure modes are specific to \texttt{qwen2.5:7b} or generalize across model families, we additionally repeated the LangGraph harness against GLM-5.1, a reasoning model hosted by the Poznan Supercomputing and Networking Center (PSNC); results are in Section VI.A.
+The LangGraph/n8n results reported in Section VI were collected with a single, fixed LLM -- \texttt{qwen2.5:7b}, served locally via Ollama -- so that any behavioral difference between platforms is attributable to the orchestration layer or to model stochasticity, not to a different model. This isolates the two failure modes discussed in Section VII without a second variable. To test whether those failure modes are specific to \texttt{qwen2.5:7b} or generalize across model families, we additionally repeated the LangGraph harness against GLM-5.1, a reasoning model hosted by the Poznan Supercomputing and Networking Center (PCSS); results are in Section VI.A.
 
 Four intents, identical across platforms and held fixed throughout, probe distinct guardrail paths:
 \begin{itemize}
@@ -227,12 +226,12 @@ All three platforms support a supervisor pattern, where one agent delegates to s
 Three practical guidelines follow. First, a guardrail specification is not self-enforcing: platforms that separate an agent's output from its own decision field across nodes need an explicit, auditable wire between them, checked at implementation review, not assumed from a guardrail call's mere presence. Second, false rejection of safe input is, on this evidence, at least as large an obstacle as missed detection of unsafe input, and deserves equal attention in guardrail design for smaller, locally-hosted models. Third, a supervisor pattern that merges steps should carry a correspondingly finer-grained guardrail on its internal reasoning, not just its final output.
 
 \section{Conclusion and Future Work}
-We implemented an identical ten-step, guardrail-checked firewall-provisioning pipeline in n8n, Langflow and LangGraph, and ran 130 trials in total: 120 across four intents on LangGraph and n8n (two models), plus 10 on Langflow's narrower, LLM-free HITL segment. The results separate two failure modes that are easy to conflate: LLM stochasticity, and a platform-specific n8n wiring gap that let a policy-violating request reach apply in 8 of 10 trials. Langflow's HITL/rollback infrastructure was stable across all 10 trials of its narrower, LLM-free scope. Critically, the stochasticity failure did not generalize: GLM-5.1 reached 40/40 correct outcomes on the identical LangGraph harness where \texttt{qwen2.5:7b} scored 20/40, showing the bias is a property of the smaller local model, not the guardrail architecture.
+We implemented an identical ten-step, guardrail-checked firewall-provisioning pipeline in n8n, Langflow and LangGraph, and ran 130 trials in total: 120 across four intents -- 80 on LangGraph and n8n with \texttt{qwen2.5:7b}, 40 more on LangGraph with GLM-5.1 -- plus 10 on Langflow's narrower, LLM-free HITL segment. The results separate two failure modes that are easy to conflate: LLM stochasticity, and a platform-specific n8n wiring gap that let a policy-violating request reach apply in 8 of 10 trials. Langflow's HITL/rollback infrastructure was stable across all 10 trials of its narrower, LLM-free scope. Critically, the stochasticity failure did not generalize: GLM-5.1 reached 40/40 correct outcomes on the identical LangGraph harness where \texttt{qwen2.5:7b} scored 20/40, showing the bias is a property of the smaller local model, not the guardrail architecture.
 
 Remaining work includes a live NetBox instance in place of the stub (Section IV.A), completing Langflow's end-to-end wiring, testing the supervisor-pattern rationale (Section VII.D) empirically, and extending the multi-model round to n8n. Code, guardrail functions and the raw experiment log are public at \url{https://github.com/sandrailievskaa/telfor-agent-orchestration}.
 
 \section*{Acknowledgment}
-The additional open-source model evaluation described in Section V uses compute infrastructure provided by the Poznan Supercomputing and Networking Center (PSNC), Poland, made available through R. {\L}apacz. The authors thank PSNC for this access.
+The additional open-source model evaluation described in Section V uses compute infrastructure provided by the Poznan Supercomputing and Networking Center (PCSS), Poland, made available through R. {\L}apacz. The authors thank PCSS for this access.
 
 \begin{thebibliography}{00}
 
