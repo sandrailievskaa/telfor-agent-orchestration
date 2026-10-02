@@ -34,7 +34,7 @@ sonja.filiposka@finki.ukim.mk}
 \and
 \IEEEauthorblockN{Roman Łapacz}
 \IEEEauthorblockA{
-\textit{Poznan Supercomputing and Networking Center - PCSS} \\
+\textit{Poznan Supercomputing and Networking Center - PSNC} \\
 Poznan, Poland \\
 romradz@man.poznan.pl}
 }
@@ -141,7 +141,7 @@ Where a business-decision field exists, both layers must pass for the pipeline t
 
 \section{Experimental Methodology}
 
-The LangGraph/n8n results reported in Section VI were collected with a single, fixed LLM -- \texttt{qwen2.5:7b}, served locally via Ollama -- so that any behavioral difference between platforms is attributable to the orchestration layer or to model stochasticity, not to a different model. This isolates the two failure modes discussed in Section VII without a second variable. To test whether those failure modes are specific to \texttt{qwen2.5:7b} or generalize across model families, we additionally repeated the LangGraph harness against GLM-5.1, a reasoning model hosted by the Poznan Supercomputing and Networking Center (PCSS); results are in Section VI.A.
+The LangGraph/n8n results reported in Section VI were collected with a single, fixed LLM -- \texttt{qwen2.5:7b}, served locally via Ollama -- so that any behavioral difference between platforms is attributable to the orchestration layer or to model stochasticity, not to a different model. This isolates the two failure modes discussed in Section VII without a second variable. To test whether those failure modes are specific to \texttt{qwen2.5:7b} or generalize across model families, we additionally repeated the LangGraph harness against GLM-5.1, a reasoning model hosted by the Poznan Supercomputing and Networking Center (PSNC); results are in Section VI.A.
 
 Four intents, identical across platforms and held fixed throughout, probe distinct guardrail paths:
 \begin{itemize}
@@ -184,7 +184,7 @@ Approval of safe requests is unreliable on both platforms. \texttt{guaranteed\_s
 
 \subsection{Multi-model round (LangGraph)}
 
-To test whether the two failure modes in Sections VII.A and VII.B are specific to \texttt{qwen2.5:7b} or generalize across model families, we repeated the same 40-trial LangGraph harness against GLM-5.1, a PCSS-hosted reasoning model (Section V). Table~\ref{tab:multimodel} reports both models' outcomes.
+To test whether the two failure modes in Sections VII.A and VII.B are specific to \texttt{qwen2.5:7b} or generalize across model families, we repeated the same 40-trial LangGraph harness against GLM-5.1, a PSNC-hosted reasoning model (Section V). Table~\ref{tab:multimodel} reports both models' outcomes.
 
 \begin{table}[!t]
 \caption{LangGraph Outcomes per Intent, qwen2.5:7b vs.\ GLM-5.1 (n=10 each)}
@@ -231,7 +231,7 @@ We implemented an identical ten-step, guardrail-checked firewall-provisioning pi
 Remaining work includes a live NetBox instance in place of the stub (Section IV.A), completing Langflow's end-to-end wiring, testing the supervisor-pattern rationale (Section VII.D) empirically, and extending the multi-model round to n8n. Code, guardrail functions and the raw experiment log are public at \url{https://github.com/sandrailievskaa/telfor-agent-orchestration}.
 
 \section*{Acknowledgment}
-The additional open-source model evaluation described in Section V uses compute infrastructure provided by the Poznan Supercomputing and Networking Center (PCSS), Poland, made available through R. {\L}apacz. The authors thank PCSS for this access.
+The additional open-source model evaluation described in Section V uses compute infrastructure provided by the Poznan Supercomputing and Networking Center (PSNC), Poland, made available through R. {\L}apacz. The authors thank PSNC for this access.
 
 \begin{thebibliography}{00}
 
